@@ -1,0 +1,14 @@
+# OpenClaw runtime state (not project content)
+openclaw-workspace-state.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Runtime logs (keep daily logs? these are operational, exclude)
+logs/*.log
+
+# OS
+.DS_Store
