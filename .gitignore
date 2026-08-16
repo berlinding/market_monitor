@@ -1,14 +1,41 @@
-# OpenClaw runtime state (not project content)
-openclaw-workspace-state.json
+# ===== Secrets =====
+.env
+.env.*
+*.key
+*.pem
+secrets/
+API.txt
 
-# Python
-__pycache__/
-*.pyc
+# ===== Runtime databases =====
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+
+# ===== Private portfolio / trading data =====
+data/private/
+portfolio*
+positions*
+trades*
+
+# ===== Large / generated data =====
+data/raw/
+data/interim/
+data/cache/
+*.parquet
+
+# ===== Runtime (local, not code) =====
+logs/
+memory/
+
+# ===== Python =====
 .venv/
 venv/
+__pycache__/
+*.pyc
 
-# Runtime logs (keep daily logs? these are operational, exclude)
-logs/*.log
+# ===== OpenClaw runtime state =====
+openclaw-workspace-state.json
 
-# OS
+# ===== OS =====
 .DS_Store

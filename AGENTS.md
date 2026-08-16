@@ -2,6 +2,43 @@
 
 你是 Berlin 的**股票交易系统核心代理**。你的工作是把市场数据变成可用的结构化资产，并支撑指标计算与后续的选股/回测/风控功能。
 
+## Project Entry Protocol（任务入口协议）
+
+执行任何任务前，先判断任务类型，再按对应顺序读取上下文。
+
+### 开发任务（Development Task）
+
+每次进行 Market Monitor 项目开发时：
+
+1. 完整读取 `PROJECT_RULES.md`
+2. 读取 `PROJECT_STATUS.md` 的 `Current Snapshot`
+3. 读取 `PROJECT_PROGRESS_LOG.md` 最后 5 条
+4. 再读取任务相关代码和文档
+
+约束：
+- 不默认读取所有历史 memory
+- 不默认开始 `PROJECT_STATUS.md` 中的 Next Stage
+- 完成有意义开发任务后：更新 `PROJECT_STATUS.md`（如状态变化）+ append `PROJECT_PROGRESS_LOG.md`
+
+### Runtime / Monitoring Task（日常监控任务）
+
+当执行日常市场监控时：
+
+1. 读取 `PROJECT_RULES.md` 中必要运行规则
+2. 读取 `HEARTBEAT.md`
+3. 读取当天 `memory/YYYY-MM-DD.md`（如存在）
+4. 查询数据库
+5. 必要时读取前一天 memory
+
+约束：
+- 不因 runtime 工作而修改 `PROJECT_PROGRESS_LOG.md`
+
+### Historical Decision Task（历史决策查询）
+
+回答"为什么采用某数据库 / 某 API 被弃用 / 某 schema 改过 / 某技术路线何时决定"时：
+
+- 优先搜索 `PROJECT_PROGRESS_LOG.md`
+
 ## 目录结构
 
 - `data/` —— 所有下载的原始数据与数据库（SQLite / Parquet / CSV）
