@@ -70,3 +70,62 @@
 ### Next Step
 
 - R1 — Core Data Model design（待 Berlin 授权后执行）
+
+---
+
+## 2026-08-17 — R1A Core Domain Model & Data Contract
+
+### Task
+
+R1A：为 Market Monitor 冻结核心领域模型、数据库逻辑结构与数据契约（设计阶段，不实施）。
+
+### Files Read
+
+- `PROJECT_RULES.md` `PROJECT_STATUS.md` `PROJECT_PROGRESS_LOG.md`（前 5 条）`AGENTS.md` `.gitignore`
+- `scripts/fetch_daily.py` `scripts/README.md`
+- `data/market.db`（只读检查 schema：daily_bars + fetch_log）
+- git status/branch/remote/log（main @ 3276e0e，工作树 clean）
+
+### Files Created
+
+- `docs/database/core_domain_model_v1.md` — 六大 Domain + 对象定义 + Mermaid ER Diagram
+- `docs/database/database_schema_design_v1.md` — 全部候选表（Core 15 张 + Deferred 7 张）PK/FK/UNIQUE/mutability/public-private
+- `docs/database/data_dictionary_v1.md` — 逐表逐字段字典（type/nullable/key/description/example/provenance/privacy/mutability）
+- `docs/database/storage_architecture_v1.md` — SQLite/Parquet/DuckDB 分工 + core.db/private.db 物理分库评估
+- `docs/database/daily_bars_migration_plan_v1.md` — 5,540 条 daily_bars 未来迁移方案（copy+validate，不执行）
+- `docs/database/r1a_schema_review_v1.md` — 设计自审（14 项 Finding）
+
+### Files Modified
+
+- `PROJECT_STATUS.md` — 状态更新为 R1 In Progress，记录 R1A 完成、Blockers 开放问题
+
+### Key Decisions
+
+1. **Entity / Instrument 双层身份模型正式采用**；ticker 不是身份；thesis/watchlist 挂 entity/instrument 不挂 ticker。
+2. **identifiers 独立成表**（instrument_identifiers，provider 中立，validity 区间 + partial unique 保证当前映射唯一）。
+3. **core.db + private.db 物理分库采纳**：持仓/成本/账户/自选/研究逻辑入 private.db；跨库引用式关联（private 只存 id）+ ATTACH 只读 join；id 唯一真源在 core。
+4. **SQLite = operational DB**（R1 唯一实施）；Parquet = 未来 bulk historical 归档；DuckDB = 未来 analytical 查询层（均 Deferred，不迁移）。
+5. **positions = snapshot state**（一行=当前状态，OPEN partial unique）；transactions = 未来 canonical ledger（Deferred），建立后 positions 转 derived。
+6. **financial facts 采用 long-form 基础模型**（financial_reports 头 + financial_facts 行，Deferred），支持 GAAP/IFRS/non-GAAP、restatement、多 provider。
+7. **events 与 event_analysis 严格分离**：events 只存确定性事实（fingerprint 去重），LLM 判断（importance/thesis_impact/points）只进 event_analysis，带 model_id/prompt_version/analysis_version 可复现。
+8. **ID 统一 integer surrogate**（SQLite ROWID）+ 业务唯一键；不用 UUID/ULID。
+9. **Schema migration 轻量方案**：schema_migrations 表 + 手写 SQL + 纯标准库 Python runner（R1B 实施），不引入 Alembic。
+10. **行情单位显式化**：Tushare vol=手(LOTS)、amount=千元(THOUSAND_CNY)，存 provider raw 值不做隐式换算；adjustment_type 显式（RAW/FWD/BWD）。
+11. **daily_bars 迁移原则**：copy + validate（V1–V7 清单）+ 30 天双写观察期 + 备份 + Berlin 批准后方可删旧表；不做 destructive rewrite。
+
+### Outputs
+
+- 六份设计文档 + ER Diagram；Core 表 15 张（含 schema_migrations），Deferred 表 7 张
+- 自审 14 项 Finding（6 HIGH 全部解决；接受 3 项残余风险：受控 upsert 证据链、positions 过渡语义、跨库引用一致性）
+
+### Not Done
+
+- ❌ 未创建新生产数据库（core.db/private.db 未建）
+- ❌ 未迁移/未修改现有 5,540 条 daily_bars，`data/market.db` 原样保留
+- ❌ 未修改 `fetch_daily.py` 生产逻辑
+- ❌ 未接入 FMP/SEC/OpenBB，未安装任何第三方 Skill
+- ❌ 未进入 R1B
+
+### Next Step
+
+- R1B — SQL DDL & Migration Specification（待 Berlin 授权，不自动开始）
