@@ -95,6 +95,19 @@ Market Monitor 是 Berlin 的私人市场监控与投研基础设施。
 
 如发现现有仓库存在风险，应在本轮修正 `.gitignore`。
 
+### 4.1 API.txt —— 严格保密文件（2026-08-17 确立）
+
+`API.txt`（`~/API.txt` 或项目根目录 `API.txt`）是 **Berlin 的严格保密文件**，包含全部 API token，**包括 GitHub token**。
+
+铁律：
+
+1. **绝不上传到公开互联网**：GitHub 公开/私有仓库、gist、pastebin、任何外部服务、任何 AI 对话粘贴，一律禁止。私有仓库同样禁止——token 一旦进入 git 历史极难彻底清除。
+2. `API.txt` 已被 `.gitignore` 忽略（`API.txt` 模式）。**每次 commit 前**必须 `git status` 确认无 `API.txt`；如发现被跟踪，立即 `git rm --cached` 并报告，不得直接删除本地文件。
+3. 不得把 token 写入：脚本源码、命令行参数（会被 shell 历史记录）、日志文件、issue/PR、聊天内容。
+4. 读取方式唯一：按 `TOOLS.md` 规定的 `grep '^TOKEN='` 模式从本地文件或环境变量读取，不硬编码。
+5. GitHub token 用途限定：仅在必要认证场景使用；**git push/pull 优先走 SSH 密钥**（本机 `~/.ssh/id_ed25519`），不把 token 拼进 remote URL（如 `https://user:token@github.com/...` 禁止）。
+6. 一旦发现泄漏风险（误提交、误粘贴、日志外泄）：**立即停止操作 → 报告 Berlin → 轮换对应 token**，不得静默处理。
+
 ## 5. 第三方 Skill / Package 安全规则
 
 第三方（OpenClaw Skill、ClawHub Skill、Python package、GitHub repository）不能因为可以安装就直接进入生产环境。至少需要：

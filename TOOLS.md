@@ -1,6 +1,6 @@
 # TOOLS.md - Local Notes
 
-## 数据源密钥（在 `~/API.txt`）
+## 数据源密钥（在 `~/API.txt` 或项目根 `API.txt`，⚠️ 严格保密文件，含 GitHub token，绝不提交 git / 上传公开互联网，详见 PROJECT_RULES.md §4.1）
 
 读取方式（脚本统一用这个，不要硬编码）：
 

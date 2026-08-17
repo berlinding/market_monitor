@@ -129,3 +129,43 @@ R1A：为 Market Monitor 冻结核心领域模型、数据库逻辑结构与数�
 ### Next Step
 
 - R1B — SQL DDL & Migration Specification（待 Berlin 授权，不自动开始）
+
+---
+
+## 2026-08-17 — Credential Security Rule（API.txt 保密规则确立）
+
+### Task
+
+Berlin 在项目根新增 `API.txt`（含全部 API token，包括 GitHub token），要求更新项目规则确保该文件绝不公开上传。
+
+### Files Read
+
+- `PROJECT_RULES.md` `AGENTS.md` `TOOLS.md` `.gitignore`
+- `git ls-files` / `git log --all --name-only` 全历史扫描
+
+### Files Modified
+
+- `PROJECT_RULES.md` — 新增 §4.1「API.txt —— 严格保密文件」铁律（不上传公开互联网、提交前检查、不写入脚本/命令行/日志、读取方式唯一、GitHub token 限用、泄漏立即轮换）
+- `AGENTS.md` — 数据源密钥位置注明严格保密
+- `TOOLS.md` — 密钥读取位置与保密说明同步
+
+### Key Decisions
+
+1. `API.txt`（`~/API.txt` 或项目根）为严格保密文件，禁止上传任何公开/私有远端仓库与外部服务；token 一旦进 git 历史极难清除。
+2. GitHub token 不拼入 remote URL；git push 优先 SSH 密钥（本机 `id_ed25519`，本次 R1A 推送已验证可用）。
+3. 提交前检查清单纳入规则：`git status` 无 `API.txt`、`git check-ignore` 生效。
+4. 泄漏响应：停止 → 报告 → 轮换 token，不静默处理。
+
+### Verified
+
+- `API.txt` 已被 `.gitignore`（第 7 行 `API.txt` 模式）忽略，未被 git 跟踪；
+- 全历史扫描无任何 `API.txt`/token/secret 文件；工作树 clean；
+- 文件权限已收紧为 `600`（属主可读）。
+
+### Not Done
+
+- 未读取/未上传/未提交 `API.txt` 内容；未修改 token 本身。
+
+### Next Step
+
+- 后续所有 git 操作遵循新规则（SSH 推送 + 提交前敏感文件检查）。
