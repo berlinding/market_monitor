@@ -110,3 +110,10 @@
 - **Decision**: 根目录存在 Dividend / Quality Screener Dashboard Prototype（`index.html` + `chart.umd.min.js` + `data/dashboard_data.js` + `Test1`）：**当前存在、尚未接入 canonical DB、不属于 R1 Core implementation**；本轮不删除、不扩展、不迁移；后续另开任务决定正式归属（候选：R8 Historical Intelligence 或 R9 Quant / Analytics Layer）。
 - **Rationale**: 该 prototype 未经治理进入 main；本轮只识别、记录、收编，避免 Recovery 任务变成 frontend refactor。
 - **Files**: `docs/prototypes/dividend_dashboard_status_v1.md`；`PROJECT_STATUS.md`
+
+## DB-D016 — Dashboard prototype relocation & Test1 cleanup（2026-08-22 执行）
+
+- **Status**: Executed（Berlin 授权 cleanup）
+- **Decision**: `Test1`（测试残留）删除；dashboard 三文件（`index.html` / `chart.umd.min.js` / `data/dashboard_data.js`）从根目录迁移至 `prototypes/dividend_dashboard/`（git mv 保留历史；`data/dashboard_data.js` 随 index.html 进入 `prototypes/dividend_dashboard/data/`，相对引用不变）。
+- **Rationale**: R1A.1 后 Berlin 批准独立 cleanup；与 `docs/prototypes/` 治理归类一致；不扩展、不重构 dashboard 功能。
+- **Files**: `docs/prototypes/dividend_dashboard_status_v1.md`（已同步更新）

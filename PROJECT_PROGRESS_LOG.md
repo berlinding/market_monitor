@@ -240,3 +240,37 @@ Berlin 在项目根新增 `API.txt`（含全部 API token，包括 GitHub token�
 ### Next Step
 
 - **Berlin Review of R1A v2 Freeze Candidate**；批准后标记 Frozen 并授权 R1B — SQL DDL & Migration Specification（不自动开始）。
+
+---
+
+## 2026-08-22 — Dashboard Cleanup & Relocation（R1A.1 后续，Berlin 批准）
+
+### Task
+
+执行 R1A.1 报告提出的两项待定 cleanup（Berlin 2026-08-22 授权）：删除 `Test1` 测试残留；dashboard 从根目录迁移至子目录。
+
+### Actions
+
+1. **删除 `Test1`**（git rm，tracked file；内容 "This is a test file."，明确测试残留）。
+2. **迁移 dashboard** 至 `prototypes/dividend_dashboard/`（git mv 保留历史）：
+   - `index.html` → `prototypes/dividend_dashboard/index.html`
+   - `chart.umd.min.js` → `prototypes/dividend_dashboard/chart.umd.min.js`
+   - `data/dashboard_data.js` → `prototypes/dividend_dashboard/data/dashboard_data.js`
+   - index.html 内相对引用（`src="chart.umd.min.js"` / `src="data/dashboard_data.js"`）保持有效，无需改前端代码。
+
+### Files Modified
+
+- `docs/prototypes/dividend_dashboard_status_v1.md` — 文件清单/风险/治理记录同步（Test1 已删、路径已更新）
+- `PROJECT_STATUS.md` — Existing Prototype 位置更新
+- `docs/database/database_design_decisions_v1.md` — 追加 DB-D016（relocation & cleanup 决策）
+- `PROJECT_PROGRESS_LOG.md` — 本记录（append-only）
+
+### Not Done
+
+- ❌ 未扩展 / 未重构 dashboard 功能
+- ❌ 未修改 sync_data.py（仍不在仓库）
+- ❌ 未开始 R1B
+
+### Next Step
+
+- 保持 Berlin 审查 R1A v2 Freeze Candidate 的待办不变。

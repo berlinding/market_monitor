@@ -41,10 +41,11 @@ R9 — Quant Layer
 
 ## Existing Prototype
 
-- **Dividend / Quality Dashboard**（港股高股息/质量筛选面板：`index.html` + `chart.umd.min.js` + `data/dashboard_data.js`）
+- **Dividend / Quality Dashboard**（港股高股息/质量筛选面板）
+- 位置：`prototypes/dividend_dashboard/`（`index.html` + `chart.umd.min.js` + `data/dashboard_data.js`；2026-08-22 从根目录迁入，git mv 保留历史）
 - Status: **Prototype, not integrated with canonical DB**（未接入 core.db/private.db）
 - 治理记录：`docs/prototypes/dividend_dashboard_status_v1.md`；决策：DB-D015
-- 本轮不删除、不扩展、不迁移；根目录结构问题后续独立任务处理
+- 本轮不扩展、不继续开发；`Test1` 测试残留已于 2026-08-22 删除（独立 cleanup）
 
 ## Next
 

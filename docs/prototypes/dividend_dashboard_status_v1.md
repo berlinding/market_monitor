@@ -10,14 +10,14 @@
 
 港股高股息 / 质量筛选监控面板（"港股稳健红利现金流 · 监控面板"）：对港股 universe 按股息率、派息连续性、现金流覆盖、质量与估值加权评分，输出分级（优秀/稳健/观察）列表与历史趋势图。
 
-## Current Files（root-level，R1A 后进入 main）
+## Current Files（2026-08-22 迁移至 `prototypes/dividend_dashboard/`，随 index.html 相对引用保持一致）
 
 | 文件 | 内容 | 大小 |
 |------|------|------|
-| `index.html` | 面板前端（HTML+CSS+JS，Chart.js 图表） | ~16 KB |
-| `chart.umd.min.js` | Chart.js UMD bundle（第三方库） | ~205 KB |
-| `data/dashboard_data.js` | 筛选结果数据（`window.DASHBOARD_DATA` + `window.HISTORY`） | ~33 KB |
-| `Test1` | 测试残留文件（内容 "This is a test file."，见 §Known Risks） | 21 B |
+| `prototypes/dividend_dashboard/index.html` | 面板前端（HTML+CSS+JS，Chart.js 图表） | ~16 KB |
+| `prototypes/dividend_dashboard/chart.umd.min.js` | Chart.js UMD bundle（第三方库） | ~205 KB |
+| `prototypes/dividend_dashboard/data/dashboard_data.js` | 筛选结果数据（`window.DASHBOARD_DATA` + `window.HISTORY`） | ~33 KB |
+| ~~Test1~~ | ~~测试残留~~（**2026-08-22 已删除**，独立 cleanup 动作） | — |
 
 ## Data Source
 
@@ -57,18 +57,18 @@
 
 1. **生成脚本缺失**：sync_data.py 未入库 → 数据不可复现（目前是"结果已提交、过程不可见"）。
 2. **数据源无记录**：无法审计数据来自哪个 API/来源。
-3. **根目录结构**：index.html / chart.umd.min.js 长期放根目录不理想（本轮不动）。
-4. **`Test1` 残留**：明确测试残留（"This is a test file."），建议后续独立 cleanup 任务删除（本轮未删，删除 tracked file 属独立动作）。
+3. ~~根目录结构~~（**2026-08-22 已解决**：迁移至 `prototypes/dividend_dashboard/`）。
+4. ~~Test1 残留~~（**2026-08-22 已删除**）。
 5. **陈旧风险**：若依赖第三方库（Chart.js UMD）的固定快照，未来安全更新需手动。
 
 ## Future Options（未决定，不自动执行）
 
-1. 迁移到 `dashboard/`、`web/` 或 `prototypes/dividend_dashboard/` 子目录（独立 cleanup 任务）。
-2. 将 sync_data.py 收编入库（先确认其数据源与隐私合规）。
-3. 未来正式归属 R8/R9，或作为 R1 之后的分析层参考实现。
-4. 保持原型状态不动，仅治理记录。
+1. 将 sync_data.py 收编入库（先确认其数据源与隐私合规）。
+2. 未来正式归属 R8/R9，或作为 R1 之后的分析层参考实现。
+3. 保持原型状态不动，仅治理记录。
 
 ## Governance Notes
 
-- 本轮（R1A.1）只识别、记录、收编；**不删除、不扩展、不重构 dashboard**。
+- R1A.1（2026-08-22）：识别、记录、收编；不删除、不扩展、不重构。
+- 后续 cleanup（2026-08-22，Berlin 授权）：删除 `Test1`；dashboard 迁移至 `prototypes/dividend_dashboard/`（git mv 保留历史；`data/dashboard_data.js` 随 index.html 进入 `prototypes/dividend_dashboard/data/`，相对引用不变）。
 - 决策登记见 `docs/database/database_design_decisions_v1.md` DB-D015。
