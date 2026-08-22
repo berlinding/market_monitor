@@ -158,10 +158,27 @@ except Exception:
 - 若未来 migration 文件被加入 COMMIT → runner 应在预检中检测并报错（或文档明确禁止），
   不得出现 runner 与 SQL 文件两套事务控制互相打架。
 
-### 4.4 Checksum 语义
+### 4.4 Checksum 语义（H3 修正：raw file bytes 为唯一契约）
 
-- checksum = SHA-256(完整文件字节)。
+> **migration checksum = SHA-256 of the exact raw migration file bytes.**
+> 唯一。**不对** normalized text / decoded-re-encoded text / trimmed text 计算 checksum。
+
+实现契约（R1C Phase 1.1 起）：
+
+```python
+raw_bytes = path.read_bytes()            # 原始字节，唯一输入
+checksum = sha256_bytes(raw_bytes)       # 只计算一次
+try:
+    sql = raw_bytes.decode("utf-8")      # 仅用于执行；不参与 checksum
+except UnicodeDecodeError:
+    raise MigrationFileError(...)        # 非 UTF-8 → MigrationFileError，不静默替换
+apply_migration(conn, migration_id, sql, checksum=checksum, description=...)
+# apply_migration 不得再自行重新计算 checksum
+```
+
+- 同一次 run：filesystem raw bytes → one SHA-256 → comparison → schema_migrations INSERT，**必须是同一个变量**（不存在 checksum A/B 双轨）。
 - 已应用 migration 的 checksum 必须与文件当前 checksum 一致；不一致 = 有人改过已应用的迁移 → **硬错误**（防止"修改历史迁移掩盖变更"）。
+- Windows CRLF / newline normalization 下 raw bytes 保持一致，不会因 read_text 规范化导致误判 CHECKSUM_MISMATCH（T-CHECKSUM-CRLF-01 验证）。
 - 变更 schema 的正确方式：新增下一个 migration 文件（如 C0002），不改 C0001。
 
 ### 4.5 dry-run / plan mode
@@ -191,7 +208,7 @@ except Exception:
 
 ---
 
-## 5. CLI 形状（规格，非实现）
+## 5. CLI 形状（规格 + H4 约束）
 
 ```
 python3 -m scripts.migrate --db core --plan        # dry-run
@@ -204,8 +221,12 @@ python3 -m scripts.migrate --status                # 两库状态一览
 参数：
 - `--db {core,private,all}`
 - `--plan`（dry-run）
+- `--status`
 - `--migrations-dir`（覆盖默认 `docs/database/sql/migrations`）
 - `--db-path`（覆盖默认 `data/runtime/core.db` / `data/private/private.db`）
+- `--no-backup-gate`（仅 disposable temp DB）
+
+**H4 约束：`--db all` 与 `--db-path` 互斥** —— `--db all` 会同时操作 core/private 两个库，若再给单一 `--db-path` 会让两个库指向同一文件，属错误配置。runner 必须在执行任何迁移前 `parser.error(...)` 拒绝（退出码 2，不创建任何文件、不执行任何 migration）。正确用法是 `--db core --db-path <core路径>` 与 `--db private --db-path <private路径>` 分开运行（T-CLI-ALL-DBPATH-01 验证）。
 
 退出码：0 = 全部成功/无待执行；1 = 有失败；2 = checksum 冲突/配置错误。
 

@@ -64,47 +64,30 @@ fetch_log(trade_date, fetched_at, rows, note)
 
 ---
 
-## 2. M0 — Live Legacy Preflight（P0-1 修正：动态 baseline + Migration Baseline Manifest）
+## 2. M0 — Live Legacy Preflight（P0-1 修正 + H1：live 只做 health preflight）
 
 ### 2.1 动态 baseline 原则
 
 - **documented_baseline**（2026-08-22）：16,620 行 / 3 日 / 5,546 标的 —— 仅历史参考。
-- **migration_time_baseline**：M0 执行时**重新实测**，后续 M1–M7 全部以该 manifest 为准。
+- **migration_time_baseline**：M1B 从 frozen snapshot 生成（见 §3.5），后续 M3–M7 全部以 snapshot manifest 为准。
 - **禁止**把 `COUNT(*) == 16,620` 等写成永久硬编码 abort 条件。
 - 若届时数据已增长（如 22,1xx 行）：只要数据结构和一致性正常，**不是错误**。
 
-### 2.2 Migration Baseline Manifest（M0 产出）
+### 2.2 M0 角色（H1 修正）
 
-M0 必须重新读取并记录（写 migration report / manifest，不写 legacy）：
+**live `data/market.db` 只负责 health/readability preflight 和生成 snapshot（M1）。
+它不产生 authoritative migration baseline。**
 
-```json
-{
-  "captured_at": "<UTC ISO-8601>",
-  "source_path": "data/market.db",
-  "source_sha256": "<sha256>",
-  "file_size": 2252800,
-  "mtime": "2026-08-20T21:55:33",
-  "row_count": 16620,
-  "distinct_trade_dates": 3,
-  "trade_date_distribution": {"20260814": 5540, "20260817": 5539, "20260820": 5541},
-  "distinct_ts_code": 5546,
-  "fetch_log_count": 3,
-  "latest_fetch_time_raw": "2026-08-20T21:55:33"
-}
-```
+- `inspect_live_source_health()`：检查 file exists / SQLite readable / 必需表存在 / 必需列存在 / `PRAGMA quick_check`，并记录 `live_preflight_observed_at` 与 `live_source_file_hash_observed`（仅供审计）。
+- **这些观察值不作为后续 canonical migration reconciliation 的 authoritative baseline。**
 
-（字段值为 2026-08-22 documented baseline 示例；实际以 M0 实测为准。）
-
-### 2.3 M0 验证项（全部基于 migration_time_baseline）
+### 2.3 M0 验证项（health only）
 
 1. `data/market.db` 存在且可只读打开；
-2. `daily_bars` schema 与预期一致（列名/类型/主键 `(ts_code, trade_date)`）；
-3. `fetch_log` schema 一致；
-4. 实测 row_count / distinct_trade_dates / trade_date_distribution / distinct_ts_code / fetch_log_count / latest_fetch_time_raw，写入 manifest；
-5. NULL 检查：daily_bars 无意外 NULL（列级 count(null) 全部为 0）；
-6. 重复 PK 检查：`SELECT COUNT(*) - COUNT(DISTINCT ts_code||trade_date) FROM daily_bars` == 0；
-7. 计算 SHA-256、记录 file size / mtime；
-8. **枚举全部 ts_code suffix**（当前实测 SH/SZ/BJ）并校验均有 deterministic MIC mapping（见 §5.0）；未知 suffix → ABORT。
+2. `daily_bars` / `fetch_log` 表存在且必需列齐全；
+3. `PRAGMA quick_check` == ok；
+4. 记录 file size / mtime / observed hash（审计用）；
+5. **枚举全部 ts_code suffix**（当前实测 SH/SZ/BJ）并校验均有 deterministic MIC mapping（见 §5.0）；未知 suffix → ABORT。
 
 **通过后才进入 M1。** 任一失败 → ABORT。
 
@@ -152,10 +135,48 @@ M0 必须重新读取并记录（写 migration report / manifest，不写 legacy
 
 - backup created ✅
 - backup integrity_check PASS ✅
-- logical reconciliation PASS ✅
-- backup hash recorded ✅
+- snapshot-internal validation PASS ✅（§3.6，不重开 live）
+- snapshot manifest recorded ✅
 
 任一不满足 → **ABORT**（不进入 M2）。
+
+### 3.5 M1B — Generate Authoritative Baseline Manifest FROM SNAPSHOT（H1）
+
+`capture_snapshot_baseline(snapshot_path)` 只读 frozen snapshot 生成 authoritative manifest：
+
+```json
+{
+  "captured_at": "<UTC ISO-8601>",
+  "snapshot_path": "<frozen snapshot path>",
+  "snapshot_sha256": "<sha256 of snapshot file bytes>",
+  "file_size": 2252800,
+  "row_count": 16620,
+  "distinct_trade_dates": 3,
+  "trade_date_distribution": {"20260814": 5540, "20260817": 5539, "20260820": 5541},
+  "distinct_ts_code": 5546,
+  "fetch_log_count": 3,
+  "latest_fetch_time_raw": "2026-08-20T21:55:33",
+  "ts_code_suffixes": ["BJ", "SH", "SZ"],
+  "aggregates": {"(trade_date, SUM(vol), SUM(amount))": "..."}
+}
+```
+
+（数值为 documented baseline 示例；实际以 snapshot 实测为准。）
+
+> **M3/M4/M5/M6/M7 全部使用 snapshot manifest，禁止再查询 live `data/market.db` 做 migration equality validation（H1）。**
+
+### 3.6 M1C — Validate Snapshot Internally（H1）
+
+`validate_snapshot(snapshot_path, manifest)` 只验证 snapshot 自身：
+
+- `PRAGMA integrity_check` == ok
+- 必需表/必需列存在
+- manifest 自洽（row_count / trade_date_distribution / distinct_ts_code / fetch_log_count / aggregates 与 snapshot 实测一致）
+- `snapshot_sha256` == sha256(snapshot 文件字节)
+
+**绝不重新打开 live DB**（无 post-backup live 依赖）。
+
+> 可选：在 backup API 执行期间记录 source connection 元数据供审计，但不在 snapshot 创建后对变化中的 live DB 做强一致比较。
 
 ---
 
@@ -256,6 +277,10 @@ legacy `daily_bars` 实际出现的 ts_code suffix（只读枚举）：
 > **strict mapping gate（S4）**：legacy distinct ts_code（5,546）必须 == mapped instrument count，
 > 才允许进入 M5/M6。任何 stock_basic missing / duplicate / ambiguous / unknown exchange →
 > ABORT BEFORE BAR COPY。
+> **H2（R1C Phase 1.1）**：stock_basic 输入在构造 lookup 前显式校验——
+>   - **duplicate ts_code → MappingGateError**（绝不 last-one-wins / first-one-wins / drop_duplicates）；
+>   - **每行必须含 ts_code / name / list_date**，缺失/空/畸形 → MappingGateError（不创建半完整 identity）；
+>   - 校验函数：`validate_stock_basic_input()`；测试 T-MAPPING-DUPLICATE-01 / T-MAPPING-MISSING-FIELD-01。
 
 ---
 

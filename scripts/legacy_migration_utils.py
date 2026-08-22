@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-legacy_migration_utils.py — synthetic legacy migration helpers (R1C Phase 1)
+legacy_migration_utils.py — synthetic legacy migration helpers (R1C Phase 1.1)
 
 Implements M0–M7 of legacy_daily_bars_migration_spec_v1.md at FIXTURE level,
 operating ONLY on temp/synthetic databases (never on data/market.db).
 
-Key invariants implemented here (P0-1 / P0-2 / P0-3 / DB-D035 / DB-D037 / DB-D038):
-  * dynamic migration-time baseline manifest (not a fixed row count);
-  * M1 creates a frozen snapshot via sqlite3.Connection.backup();
-    all later phases read ONLY from the frozen snapshot;
-  * raw_artifact registration (M2B) happens after source/dataset bootstrap (M2);
-  * 100% mapping gate; unknown ts_code suffix -> abort;
+Key invariants implemented here (P0-1/P0-2/P0-3 + H1, DB-D035/DB-D037/DB-D038):
+  * live DB is used ONLY for health/readability preflight and to produce the
+    frozen snapshot (H1) — it is NOT the authoritative migration baseline;
+  * authoritative baseline manifest is generated FROM the frozen snapshot
+    (capture_snapshot_baseline) and drives M3–M7;
+  * validate_snapshot NEVER reopens the live DB (no post-backup live reads);
+  * dynamic migration-time baseline (not a fixed row count);
+  * 100% mapping gate; duplicate stock_basic ts_code / missing fields are
+    fatal (H2); unknown ts_code suffix -> abort;
   * legacy naive timestamps converted with an explicit IANA zone, never guessed.
 """
 
@@ -25,6 +28,16 @@ from scripts.timestamp_utils import convert_legacy_naive_to_utc
 
 # deterministic suffix -> MIC mapping (S4 / DB-D037); extend with new exchanges only via decision.
 SUFFIX_MIC = {"SH": "XSHG", "SZ": "XSHE", "BJ": "XBSE"}
+
+REQUIRED_DAILY_BARS_COLUMNS = {
+    "ts_code", "trade_date", "open", "high", "low", "close",
+    "pre_close", "change", "pct_chg", "vol", "amount",
+}
+REQUIRED_FETCH_LOG_COLUMNS = {"trade_date", "fetched_at", "rows", "note"}
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class MappingGateError(ValueError):
@@ -86,11 +99,81 @@ def build_stock_basic_fixture(ts_codes: list[str]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# M0 — dynamic baseline manifest
+# M0 — live health preflight (H1: NOT authoritative baseline)
 # ---------------------------------------------------------------------------
-def capture_baseline(db_path: Path) -> dict:
-    """Read-only baseline snapshot of a legacy (fixture) DB (M0)."""
-    conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
+def inspect_live_source_health(live_path: Path) -> dict:
+    """Live preflight: file exists, readable, required tables/columns, integrity.
+
+    This is a HEALTH CHECK ONLY. The observed values (including
+    live_source_file_hash_observed) are informational audit data and must NOT
+    be used as the authoritative migration baseline (H1). The authoritative
+    baseline comes from the frozen snapshot (capture_snapshot_baseline).
+    """
+    result = {
+        "observed_at": _utc_now_iso(),
+        "live_path": str(live_path),
+        "file_exists": live_path.exists(),
+        "sqlite_readable": False,
+        "tables_ok": False,
+        "columns_ok": False,
+        "integrity_check_ok": False,
+        "ok": False,
+    }
+    if not live_path.exists():
+        return result
+    try:
+        conn = sqlite3.connect(f"file:{live_path.resolve()}?mode=ro", uri=True)
+        try:
+            result["sqlite_readable"] = True
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            result["tables_ok"] = {"daily_bars", "fetch_log"} <= tables
+            if result["tables_ok"]:
+                db_cols = {
+                    c[1]
+                    for c in conn.execute("PRAGMA table_info('daily_bars')")
+                }
+                fl_cols = {
+                    c[1]
+                    for c in conn.execute("PRAGMA table_info('fetch_log')")
+                }
+                result["columns_ok"] = (
+                    REQUIRED_DAILY_BARS_COLUMNS <= db_cols
+                    and REQUIRED_FETCH_LOG_COLUMNS <= fl_cols
+                )
+            result["integrity_check_ok"] = (
+                conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+            )
+            result["ok"] = (
+                result["tables_ok"]
+                and result["columns_ok"]
+                and result["integrity_check_ok"]
+            )
+            # informational only — never used for migration reconciliation
+            result["live_source_file_hash_observed"] = hashlib.sha256(
+                live_path.read_bytes()
+            ).hexdigest()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        pass
+    return result
+
+
+# ---------------------------------------------------------------------------
+# M1B — authoritative migration baseline manifest FROM frozen snapshot (H1)
+# ---------------------------------------------------------------------------
+def capture_snapshot_baseline(snapshot_path: Path) -> dict:
+    """Generate the authoritative migration baseline manifest from the snapshot.
+
+    This manifest is the SINGLE source of truth for M3–M7 reconciliation.
+    It is derived only from the frozen snapshot file — never from the live DB.
+    """
+    conn = sqlite3.connect(f"file:{snapshot_path.resolve()}?mode=ro", uri=True)
     try:
         row_count = conn.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
         dist_dates = conn.execute(
@@ -115,17 +198,21 @@ def capture_baseline(db_path: Path) -> dict:
                 if "." in r[0]
             }
         )
+        aggregates = {
+            (r[0], r[1], r[2])
+            for r in conn.execute(
+                "SELECT trade_date, SUM(vol), SUM(amount) FROM daily_bars "
+                "GROUP BY trade_date"
+            )
+        }
     finally:
         conn.close()
-    data = db_path.read_bytes()
+    data = snapshot_path.read_bytes()
     return {
-        "captured_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "source_path": str(db_path),
-        "source_sha256": hashlib.sha256(data).hexdigest(),
+        "captured_at": _utc_now_iso(),
+        "snapshot_path": str(snapshot_path),
+        "snapshot_sha256": hashlib.sha256(data).hexdigest(),
         "file_size": len(data),
-        "mtime": datetime.fromtimestamp(db_path.stat().st_mtime).isoformat(
-            timespec="seconds"
-        ),
         "row_count": row_count,
         "distinct_trade_dates": dist_dates,
         "trade_date_distribution": date_dist,
@@ -133,11 +220,12 @@ def capture_baseline(db_path: Path) -> dict:
         "fetch_log_count": fetch_count,
         "latest_fetch_time_raw": latest,
         "ts_code_suffixes": suffixes,
+        "aggregates": aggregates,
     }
 
 
 # ---------------------------------------------------------------------------
-# M1 — frozen snapshot (Type B logical backup) + validation (DB-D038)
+# M1 — frozen snapshot (Type B logical backup) + snapshot-internal validation
 # ---------------------------------------------------------------------------
 def create_frozen_snapshot(src_path: Path, dst_path: Path) -> str:
     """sqlite3.Connection.backup() -> frozen snapshot file; returns its SHA-256."""
@@ -152,7 +240,11 @@ def create_frozen_snapshot(src_path: Path, dst_path: Path) -> str:
 
 
 def validate_snapshot(snapshot_path: Path, manifest: dict) -> dict[str, bool]:
-    """Type B logical validation of a frozen snapshot vs baseline manifest."""
+    """Snapshot-internal validation (H1): NEVER reopens the live DB.
+
+    Checks: integrity, required schema/columns, manifest self-consistency,
+    snapshot_sha256 == sha256(snapshot bytes). The live DB is not consulted.
+    """
     conn = sqlite3.connect(f"file:{snapshot_path.resolve()}?mode=ro", uri=True)
     try:
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -163,6 +255,18 @@ def validate_snapshot(snapshot_path: Path, manifest: dict) -> dict[str, bool]:
             )
         }
         schema_ok = {"daily_bars", "fetch_log"} <= tables
+        db_cols = {
+            c[1]
+            for c in conn.execute("PRAGMA table_info('daily_bars')")
+        }
+        fl_cols = {
+            c[1]
+            for c in conn.execute("PRAGMA table_info('fetch_log')")
+        }
+        columns_ok = (
+            REQUIRED_DAILY_BARS_COLUMNS <= db_cols
+            and REQUIRED_FETCH_LOG_COLUMNS <= fl_cols
+        )
         row_count = conn.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
         date_dist = dict(
             conn.execute(
@@ -180,46 +284,77 @@ def validate_snapshot(snapshot_path: Path, manifest: dict) -> dict[str, bool]:
                 "GROUP BY trade_date"
             )
         }
-        src_agg = {}
-        src_conn = sqlite3.connect(
-            f"file:{manifest['source_path']}?mode=ro", uri=True
-        )
-        try:
-            src_agg = {
-                (r[0], r[1], r[2])
-                for r in src_conn.execute(
-                    "SELECT trade_date, SUM(vol), SUM(amount) FROM daily_bars "
-                    "GROUP BY trade_date"
-                )
-            }
-        finally:
-            src_conn.close()
     finally:
         conn.close()
 
     return {
         "integrity_check": integrity,
         "schema_equality": schema_ok,
+        "columns_ok": columns_ok,
         "row_count_equality": row_count == manifest["row_count"],
         "fetch_log_count_equality": fetch_count == manifest["fetch_log_count"],
         "trade_date_distribution_equality": date_dist
         == manifest["trade_date_distribution"],
         "distinct_ts_code_equality": dist_ts == manifest["distinct_ts_code"],
-        "aggregate_reconciliation": agg == src_agg,
+        "aggregate_self_consistency": agg == manifest["aggregates"],
+        "snapshot_hash_matches": hashlib.sha256(
+            snapshot_path.read_bytes()
+        ).hexdigest()
+        == manifest["snapshot_sha256"],
     }
 
 
 # ---------------------------------------------------------------------------
-# M3/M4 — instrument mapping (strict gate, DB-D037)
+# M3/M4 — instrument mapping (strict gate, DB-D037 + H2)
 # ---------------------------------------------------------------------------
+def validate_stock_basic_input(stock_basic: list[dict]) -> None:
+    """H2: stock_basic input validation — duplicates and missing fields are fatal.
+
+    Raises MappingGateError (never last-one-wins / drop_duplicates / silent fill).
+    """
+    seen: set[str] = set()
+    for row in stock_basic:
+        if not isinstance(row, dict):
+            raise MappingGateError(
+                f"stock_basic row is not a dict: {row!r}"
+            )
+        ts = row.get("ts_code")
+        if not ts or not isinstance(ts, str) or not ts.strip():
+            raise MappingGateError(
+                f"stock_basic row missing/empty ts_code: {row!r}"
+            )
+        name = row.get("name")
+        if not name or not isinstance(name, str) or not name.strip():
+            raise MappingGateError(
+                f"stock_basic row missing/empty name for ts_code {ts!r}: {row!r}"
+            )
+        list_date = row.get("list_date")
+        if not list_date or not isinstance(list_date, str) or not list_date.strip():
+            raise MappingGateError(
+                f"stock_basic row missing/empty list_date for ts_code {ts!r}: {row!r}"
+            )
+        if ts in seen:
+            raise MappingGateError(
+                f"duplicate stock_basic ts_code: {ts!r} appears more than once; "
+                "refusing to guess which identity wins (strict mapping gate)"
+            )
+        seen.add(ts)
+
+
 def build_ts_code_mapping(
     snapshot_path: Path, stock_basic: list[dict]
 ) -> dict[str, dict]:
     """Map every distinct legacy ts_code to a deterministic instrument identity.
 
     Returns {ts_code: {"symbol": ..., "mic": ..., "entity_name": ...}}.
-    Raises MappingGateError on missing ts_code / duplicate / unknown suffix.
+    Raises MappingGateError on:
+      * malformed stock_basic row (missing ts_code/name/list_date)  [H2]
+      * duplicate stock_basic ts_code                              [H2]
+      * missing legacy ts_code in stock_basic                      [strict gate]
+      * unknown suffix                                             [strict gate]
     """
+    validate_stock_basic_input(stock_basic)
+
     conn = sqlite3.connect(f"file:{snapshot_path.resolve()}?mode=ro", uri=True)
     try:
         legacy_ts = {

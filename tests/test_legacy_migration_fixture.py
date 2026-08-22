@@ -81,7 +81,8 @@ class TestTimestampUtils(unittest.TestCase):
 class TestDynamicBaseline(unittest.TestCase):
     def test_baseline_uses_actual_rows_not_documented(self):
         """T-BASELINE-01: documented baseline says 5 rows, fixture has 6.
-        M0 must use the actual 6 and not fail."""
+        Authoritative baseline comes from the frozen snapshot and must use the
+        actual 6 (not the documented reference) without failing."""
         with tempfile.TemporaryDirectory() as td:
             live = Path(td) / "live.db"
             bars = make_bars(["600519.SH", "000001.SZ"], ["20260814", "20260817", "20260820"])
@@ -90,7 +91,11 @@ class TestDynamicBaseline(unittest.TestCase):
                      ("20260820", "2026-08-20T09:30:00", 2)]
             lmu.create_legacy_fixture(live, bars, fetch)
 
-            manifest = lmu.capture_baseline(live)
+            health = lmu.inspect_live_source_health(live)
+            self.assertTrue(health["ok"])
+            snapshot = Path(td) / "snapshot.db"
+            backup_hash = lmu.create_frozen_snapshot(live, snapshot)
+            manifest = lmu.capture_snapshot_baseline(snapshot)
             self.assertEqual(manifest["row_count"], 6)  # actual, not 5
             self.assertEqual(manifest["distinct_ts_code"], 2)
             self.assertEqual(manifest["distinct_trade_dates"], 3)
@@ -98,10 +103,139 @@ class TestDynamicBaseline(unittest.TestCase):
             documented = 5
             self.assertNotEqual(documented, manifest["row_count"])
             # manifest contains all required fields
-            for key in ("captured_at", "source_path", "source_sha256", "file_size",
+            for key in ("captured_at", "snapshot_path", "snapshot_sha256", "file_size",
                         "row_count", "trade_date_distribution", "distinct_ts_code",
-                        "fetch_log_count", "latest_fetch_time_raw"):
+                        "fetch_log_count", "latest_fetch_time_raw", "ts_code_suffixes",
+                        "aggregates"):
                 self.assertIn(key, manifest)
+            self.assertEqual(backup_hash, manifest["snapshot_sha256"])
+
+
+class TestSnapshotBaselineAuthority(unittest.TestCase):
+    def _make_live(self, td: str, ts_codes=None) -> Path:
+        live = Path(td) / "live.db"
+        lmu.create_legacy_fixture(
+            live,
+            make_bars(ts_codes or TS_CODES),
+            make_fetch_log(),
+        )
+        return live
+
+    def _snapshot_and_manifest(self, td: str, live: Path):
+        snapshot = Path(td) / "snapshot.db"
+        backup_hash = lmu.create_frozen_snapshot(live, snapshot)
+        manifest = lmu.capture_snapshot_baseline(snapshot)
+        return snapshot, backup_hash, manifest
+
+    def test_snapshot_baseline_authoritative_after_live_mutation(self):
+        """T-SNAPSHOT-BASELINE-01: 6-row fixture; mutate live (rows + fetch_log)
+        after snapshot; migration still driven by the snapshot manifest (6 rows)."""
+        with tempfile.TemporaryDirectory() as td:
+            live = self._make_live(td, ts_codes=TS_CODES[:2])  # 2 ts * 3 dates = 6 rows
+            health = lmu.inspect_live_source_health(live)
+            self.assertTrue(health["ok"])
+            snapshot, backup_hash, manifest = self._snapshot_and_manifest(td, live)
+            self.assertEqual(manifest["row_count"], 6)
+
+            # mutate live after snapshot: add 1 bar row + 1 fetch_log row
+            conn = sqlite3.connect(str(live))
+            conn.execute(
+                "INSERT INTO daily_bars VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                ("999999.SH", "20260820", 1, 1, 1, 1, 1, 0, 0, 1, 1),
+            )
+            conn.execute(
+                "INSERT INTO fetch_log VALUES ('20260821', '2026-08-21T09:30:00', 1, '')",
+            )
+            conn.commit()
+            conn.close()
+
+            mapping = lmu.build_ts_code_mapping(
+                snapshot, lmu.build_stock_basic_fixture(TS_CODES[:2])
+            )
+            count, val = TestFrozenSnapshotSource()._run_canonical_pipeline(
+                td, snapshot, manifest, mapping, backup_hash
+            )
+            self.assertEqual(count, 6)  # snapshot manifest governs, not live's 7
+            self.assertTrue(all(val.values()), msg=val)
+
+    def test_snapshot_hash_is_snapshot_bytes(self):
+        """T-SNAPSHOT-HASH-01: manifest snapshot_sha256 == sha256(snapshot file
+        bytes), not the live source file hash."""
+        with tempfile.TemporaryDirectory() as td:
+            live = self._make_live(td)
+            snapshot, backup_hash, manifest = self._snapshot_and_manifest(td, live)
+            import hashlib
+            self.assertEqual(
+                manifest["snapshot_sha256"],
+                hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+            )
+            self.assertEqual(backup_hash, manifest["snapshot_sha256"])
+            # must not accidentally be the live file hash
+            live_hash = hashlib.sha256(live.read_bytes()).hexdigest()
+            self.assertNotEqual(manifest["snapshot_sha256"], live_hash)
+
+    def test_validate_snapshot_does_not_open_live(self):
+        """validate_snapshot must never reopen the live DB (H1)."""
+        with tempfile.TemporaryDirectory() as td:
+            live = self._make_live(td)
+            snapshot, _, manifest = self._snapshot_and_manifest(td, live)
+            # delete the live DB entirely; validation must still pass on snapshot
+            live.unlink()
+            validation = lmu.validate_snapshot(snapshot, manifest)
+            self.assertTrue(all(validation.values()), msg=validation)
+
+
+class TestStockBasicInputValidation(unittest.TestCase):
+    def _snapshot_for(self, td: str, bars=None, fetch=None) -> Path:
+        live = Path(td) / "live.db"
+        lmu.create_legacy_fixture(live, bars or make_bars(), fetch or make_fetch_log())
+        snapshot = Path(td) / "snapshot.db"
+        lmu.create_frozen_snapshot(live, snapshot)
+        return snapshot
+
+    def test_duplicate_stock_basic_ts_code_fails_fast(self):
+        """T-MAPPING-DUPLICATE-01"""
+        with tempfile.TemporaryDirectory() as td:
+            snapshot = self._snapshot_for(td)
+            duplicate = [
+                {"ts_code": "600519.SH", "name": "Co A", "list_date": "2001-01-01"},
+                {"ts_code": "600519.SH", "name": "Co B", "list_date": "2002-01-01"},
+            ]
+            with self.assertRaises(lmu.MappingGateError) as ctx:
+                lmu.build_ts_code_mapping(snapshot, duplicate)
+            self.assertIn("duplicate", str(ctx.exception).lower())
+            self.assertIn("600519.SH", str(ctx.exception))
+
+    def test_missing_required_field_fails_fast(self):
+        """T-MAPPING-MISSING-FIELD-01: missing ts_code / name / list_date abort."""
+        with tempfile.TemporaryDirectory() as td:
+            snapshot = self._snapshot_for(td)
+            rows = lmu.build_stock_basic_fixture(TS_CODES)
+            for field in ("ts_code", "name", "list_date"):
+                bad = [dict(r) for r in rows]
+                del bad[0][field]
+                with self.assertRaises(lmu.MappingGateError) as ctx:
+                    lmu.build_ts_code_mapping(snapshot, bad)
+                self.assertIn(field, str(ctx.exception))
+
+    def test_empty_ts_code_fails_fast(self):
+        with tempfile.TemporaryDirectory() as td:
+            snapshot = self._snapshot_for(td)
+            bad = lmu.build_stock_basic_fixture(TS_CODES)
+            bad[0]["ts_code"] = "   "
+            with self.assertRaises(lmu.MappingGateError):
+                lmu.build_ts_code_mapping(snapshot, bad)
+
+    def test_validate_stock_basic_input_standalone(self):
+        dup = [
+            {"ts_code": "000001.SZ", "name": "A", "list_date": "1991-01-01"},
+            {"ts_code": "000001.SZ", "name": "B", "list_date": "1991-01-01"},
+        ]
+        with self.assertRaises(lmu.MappingGateError):
+            lmu.validate_stock_basic_input(dup)
+        lmu.validate_stock_basic_input(
+            [{"ts_code": "000001.SZ", "name": "A", "list_date": "1991-01-01"}]
+        )
 
 
 class TestFrozenSnapshotSource(unittest.TestCase):
@@ -201,9 +335,11 @@ class TestFrozenSnapshotSource(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             live = Path(td) / "live.db"
             lmu.create_legacy_fixture(live, make_bars(), make_fetch_log())
-            manifest = lmu.capture_baseline(live)
+            health = lmu.inspect_live_source_health(live)
+            self.assertTrue(health["ok"])
             snapshot = Path(td) / "snapshot.db"
             backup_hash = lmu.create_frozen_snapshot(live, snapshot)
+            manifest = lmu.capture_snapshot_baseline(snapshot)
             validation = lmu.validate_snapshot(snapshot, manifest)
             self.assertTrue(all(validation.values()), msg=validation)
 
@@ -231,17 +367,20 @@ class TestFrozenSnapshotSource(unittest.TestCase):
 
     def test_backup_logical_validation_type_b(self):
         """T-BACKUP-01: logical backup bytes may differ from source; validation
-        is based on integrity/schema/rows/aggregates, not byte equality."""
+        is based on integrity/schema/rows/aggregates, not byte equality.
+        H1: the live DB is never reopened for validation."""
         with tempfile.TemporaryDirectory() as td:
             live = Path(td) / "live.db"
             lmu.create_legacy_fixture(live, make_bars(), make_fetch_log())
-            manifest = lmu.capture_baseline(live)
+            health = lmu.inspect_live_source_health(live)
+            self.assertTrue(health["ok"])
             snapshot = Path(td) / "snapshot.db"
             backup_hash = lmu.create_frozen_snapshot(live, snapshot)
-            # source hash and backup hash may differ — that is ALLOWED
-            src_hash = manifest["source_sha256"]
+            manifest = lmu.capture_snapshot_baseline(snapshot)
+            # snapshot hash and live hash may differ — that is ALLOWED
+            live_hash = health["live_source_file_hash_observed"]
             self.assertEqual(len(backup_hash), 64)
-            self.assertEqual(len(src_hash), 64)
+            self.assertEqual(len(live_hash), 64)
             validation = lmu.validate_snapshot(snapshot, manifest)
             self.assertTrue(all(validation.values()), msg=validation)
             # note: we do NOT assert hashes are equal; byte identity is not required

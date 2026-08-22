@@ -311,5 +311,117 @@ class TestSeparateHistories(unittest.TestCase):
                 c2.close()
 
 
+class TestChecksumRawBytes(unittest.TestCase):
+    """H3: checksum = SHA-256 of exact raw migration file bytes."""
+
+    def _tmp(self, td: str, raw: bytes):
+        d = Path(td) / "core"
+        d.mkdir(parents=True)
+        (d / "C0001_crlf.sql").write_bytes(raw)
+        return d
+
+    def test_crlf_stable_across_runs(self):
+        """T-CHECKSUM-CRLF-01: CRLF bytes apply then SKIP (no mismatch)."""
+        with tempfile.TemporaryDirectory() as td:
+            raw = b"CREATE TABLE t_crlf(id INTEGER);\r\n"
+            d = self._tmp(td, raw)
+            db = Path(td) / "core.db"
+            r1 = migrate.run_migrations(db, d, "C", db_label="core",
+                                        no_backup_gate=True)
+            self.assertEqual(r1[0]["status"], "APPLIED")
+            r2 = migrate.run_migrations(db, d, "C", db_label="core",
+                                        no_backup_gate=True)
+            self.assertEqual(r2[0]["status"], "SKIP")  # same raw bytes -> no mismatch
+
+    def test_tamper_after_apply_raises_checksum_error(self):
+        """Changing a single byte after apply must raise MigrationChecksumError."""
+        with tempfile.TemporaryDirectory() as td:
+            raw = b"CREATE TABLE t_crlf(id INTEGER);\r\n"
+            d = self._tmp(td, raw)
+            db = Path(td) / "core.db"
+            migrate.run_migrations(db, d, "C", db_label="core", no_backup_gate=True)
+            (d / "C0001_crlf.sql").write_bytes(raw + b"-- tampered\r\n")
+            with self.assertRaises(migrate.MigrationChecksumError):
+                migrate.run_migrations(db, d, "C", db_label="core",
+                                       no_backup_gate=True)
+
+    def test_invalid_utf8_rejected(self):
+        """T-MIGRATION-ENCODING-01: non-UTF-8 bytes -> MigrationFileError,
+        never a bare UnicodeDecodeError or silent replacement."""
+        with tempfile.TemporaryDirectory() as td:
+            raw = b"CREATE TABLE t_bad(id INTEGER);\xff\xfe\r\n"
+            d = self._tmp(td, raw)
+            db = Path(td) / "core.db"
+            with self.assertRaises(migrate.MigrationFileError):
+                migrate.run_migrations(db, d, "C", db_label="core",
+                                       no_backup_gate=True)
+
+    def test_checksum_insert_and_compare_same_value(self):
+        """The checksum stored must equal sha256(raw file bytes)."""
+        with tempfile.TemporaryDirectory() as td:
+            raw = b"CREATE TABLE t_ck(id INTEGER);\n"
+            d = self._tmp(td, raw)
+            db = Path(td) / "core.db"
+            migrate.run_migrations(db, d, "C", db_label="core", no_backup_gate=True)
+            conn = sqlite3.connect(str(db))
+            try:
+                stored = conn.execute(
+                    "SELECT checksum FROM schema_migrations WHERE migration_id='C0001'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(stored, migrate.sha256_bytes(raw))
+
+
+class TestCliAmbiguity(unittest.TestCase):
+    """H4: --db all + --db-path is ambiguous and must be rejected."""
+
+    def test_all_with_db_path_rejected(self):
+        """T-CLI-ALL-DBPATH-01"""
+        with tempfile.TemporaryDirectory() as td:
+            foo = Path(td) / "foo.db"
+            with self.assertRaises(SystemExit) as ctx:
+                migrate.main(["--db", "all", "--db-path", str(foo)])
+            self.assertEqual(ctx.exception.code, 2)
+            self.assertFalse(foo.exists(), "no DB file may be created")
+
+    def test_single_db_with_path_allowed(self):
+        with tempfile.TemporaryDirectory() as td:
+            foo = Path(td) / "foo.db"
+            rc = migrate.main(["--db", "core", "--db-path", str(foo),
+                               "--migrations-dir", str(MIGRATIONS),
+                               "--no-backup-gate"])
+            self.assertEqual(rc, 0)
+            self.assertTrue(foo.exists())
+
+    def test_all_without_path_ok(self):
+        # --db all + --db-path is rejected even with --plan (H4)
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(SystemExit) as ctx:
+                migrate.main(["--db", "all", "--plan",
+                              "--db-path", str(Path(td) / "x.db")])
+            self.assertEqual(ctx.exception.code, 2)
+
+
+class TestProductionSymlinkGuard(unittest.TestCase):
+    """T-PROD-SYMLINK-01: a symlink aliasing a production path must be caught
+    after Path.resolve(). Skipped if the OS/filesystem cannot create symlinks."""
+
+    def test_symlink_alias_to_production_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            alias = Path(td) / "alias.db"
+            prod = PROJECT_ROOT / "data" / "runtime" / "core.db"
+            try:
+                alias.symlink_to(prod)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink unsupported here: {exc}")
+            d = tmp_migrations_dir(
+                td, "core", {"C0001_ok.sql": "CREATE TABLE t_a(id INTEGER);"}
+            )
+            with self.assertRaises(migrate.ProductionWriteNotAuthorizedError):
+                migrate.run_migrations(alias, d, "C", db_label="core")
+            self.assertFalse(prod.exists(), "production DB must not be created")
+
+
 if __name__ == "__main__":
     unittest.main()

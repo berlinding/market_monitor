@@ -211,10 +211,15 @@ def apply_migration(
     conn: sqlite3.Connection,
     migration_id: str,
     sql: str,
+    checksum: str,
     description: str,
 ) -> None:
+    """Apply one migration inside a runner-owned transaction (DB-D034).
+
+    checksum is the precomputed SHA-256 of the EXACT raw migration file bytes
+    (H3); apply_migration must NOT recompute it from decoded text.
+    """
     validate_migration_content(migration_id, sql)
-    checksum = sha256_bytes(sql.encode("utf-8"))
     migration_script = "BEGIN IMMEDIATE;\n" + sql
     started = time.monotonic()
     try:
@@ -298,8 +303,17 @@ def run_migrations(
     try:
         applied = load_applied(conn)
         for mid, _, path in files:
-            sql = path.read_text(encoding="utf-8")
-            checksum = sha256_bytes(sql.encode("utf-8"))
+            # H3: checksum is computed ONCE from the exact raw file bytes;
+            # comparison and schema_migrations INSERT use the same value.
+            raw_bytes = path.read_bytes()
+            checksum = sha256_bytes(raw_bytes)
+            try:
+                sql = raw_bytes.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise MigrationFileError(
+                    f"{mid}: migration file is not valid UTF-8 ({exc}); "
+                    "refusing to apply with replacement encoding."
+                ) from exc
             if mid in applied:
                 if applied[mid] == checksum:
                     rows.append({"db": db_label, "migration_id": mid,
@@ -309,7 +323,8 @@ def run_migrations(
                     f"{mid}: applied migration file changed (checksum mismatch); "
                     "refusing to replay. Create a new migration instead."
                 )
-            apply_migration(conn, mid, sql, description=path.stem)
+            apply_migration(conn, mid, sql, checksum=checksum,
+                            description=path.stem)
             rows.append({"db": db_label, "migration_id": mid,
                          "status": "APPLIED", "checksum": checksum})
     finally:
@@ -362,7 +377,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # H4: --db all with a single --db-path is ambiguous (core and private would
+    # target the same file); reject before doing anything.
+    if args.db == "all" and args.db_path:
+        parser.error(
+            "--db-path cannot be used with --db all; "
+            "run --db core and --db private separately with their own paths."
+        )
+
     migrations_dir = Path(args.migrations_dir)
     targets = ["core", "private"] if args.db == "all" else [args.db]
 

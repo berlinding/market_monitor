@@ -172,7 +172,8 @@ class TestCanonicalVsSnapshot(unittest.TestCase):
                 migrate.connect_db(snap_db, create=True),
                 "SNAP_C0001",
                 snapshot_sql,
-                "snapshot equivalence",
+                checksum=migrate.sha256_bytes(snapshot_sql.encode("utf-8")),
+                description="snapshot equivalence",
             )
             c1 = migrate.connect_db(canon_db)
             c2 = migrate.connect_db(snap_db)
@@ -196,7 +197,8 @@ class TestCanonicalVsSnapshot(unittest.TestCase):
                 migrate.connect_db(snap_db, create=True),
                 "SNAP_P0001",
                 snapshot_sql,
-                "snapshot equivalence",
+                checksum=migrate.sha256_bytes(snapshot_sql.encode("utf-8")),
+                description="snapshot equivalence",
             )
             c1 = migrate.connect_db(canon_db)
             c2 = migrate.connect_db(snap_db)

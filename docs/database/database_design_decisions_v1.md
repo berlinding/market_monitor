@@ -384,3 +384,53 @@
 - **Consequences**: `scripts/migrate.py` + 6 个测试套件；Ran 62 tests OK。
 - **Affected Files**: `scripts/migrate.py`；`scripts/timestamp_utils.py`；`scripts/db_validators.py`；`scripts/legacy_migration_utils.py`；`tests/*`
 - **Date**: 2026-08-22
+
+## DB-D045 — Frozen snapshot owns authoritative migration baseline（R1C Phase 1.1，H1）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: live `data/market.db` 只负责 health/readability preflight（`inspect_live_source_health`：file exists / readable / tables / columns / quick_check / observed hash，仅审计）与生成 snapshot；**authoritative migration baseline 由 frozen snapshot 生成**（`capture_snapshot_baseline`：snapshot_path / snapshot_sha256 / row_count / trade_date_distribution / distinct_ts_code / fetch_log_count / latest_fetch_time_raw / ts_code_suffixes / aggregates）；`validate_snapshot` **不得 reopen live DB**（只验证 snapshot 内部 + manifest 自洽 + hash）。M3–M7 全部使用 snapshot manifest。
+- **Alternatives**: 以 live 查询为 baseline（拒绝——并发竞态：row_count/hash/snapshot/aggregate 可能来自不同版本）。
+- **Rationale**: 消除 post-backup live 依赖；migration correctness 的 authoritative source 就是 snapshot 本身。
+- **Consequences**: 删除 `capture_baseline()`；新增 inspect_live_source_health / capture_snapshot_baseline；T-SNAPSHOT-BASELINE-01 / T-SNAPSHOT-HASH-01；validate_snapshot 不再重开 live。
+- **Affected Files**: `scripts/legacy_migration_utils.py`；`tests/test_legacy_migration_fixture.py`；`docs/database/legacy_daily_bars_migration_spec_v1.md` §2/§3.5/§3.6
+- **Date**: 2026-08-22
+
+## DB-D046 — stock_basic duplicate identity input is fatal（R1C Phase 1.1，H2）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: stock_basic 输入在构造 lookup 前显式校验（`validate_stock_basic_input`）：duplicate ts_code → `MappingGateError`（含 offending ts_code，绝不 last/first-one-wins 或 drop_duplicates）；每行必须含 ts_code/name/list_date，缺失/空/畸形 → `MappingGateError`（不创建半完整 identity）。
+- **Alternatives**: dict 覆盖（拒绝——静默丢身份）；dup 警告继续（拒绝——违反 strict gate）。
+- **Rationale**: identity 输入必须确定性与完整性；否则 canonical 身份可能错误合并。
+- **Consequences**: build_ts_code_mapping 首先调用 validate；T-MAPPING-DUPLICATE-01 / T-MAPPING-MISSING-FIELD-01。
+- **Affected Files**: `scripts/legacy_migration_utils.py`；`tests/test_legacy_migration_fixture.py`；`docs/database/legacy_daily_bars_migration_spec_v1.md` §5.2
+- **Date**: 2026-08-22
+
+## DB-D047 — Migration checksum equals exact raw file SHA-256（R1C Phase 1.1，H3）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: **migration checksum = SHA-256(exact raw migration file bytes)**，唯一；不对 normalized/decoded-re-encoded/trimmed text 计算。实现：`raw_bytes = path.read_bytes()` → `checksum = sha256_bytes(raw_bytes)`（只算一次）→ `sql = raw_bytes.decode("utf-8")`（仅执行；UnicodeDecodeError → `MigrationFileError`）→ `apply_migration(conn, mid, sql, checksum=checksum, ...)`（apply 不再自行重算）；comparison 与 schema_migrations INSERT 用同一变量。
+- **Alternatives**: 对 read_text 后重新 encode 计算（拒绝——Windows CRLF/newline normalization 下与 raw bytes 不一致，导致误判 CHECKSUM_MISMATCH）。
+- **Rationale**: checksum 必须反映磁盘上的确切文件；解码仅是执行步骤。
+- **Consequences**: T-CHECKSUM-CRLF-01（CRLF APPLIED→SKIP 无 mismatch；tamper → MigrationChecksumError）；T-MIGRATION-ENCODING-01。
+- **Affected Files**: `scripts/migrate.py`；`tests/test_migration_runner.py`；`docs/database/migration_runner_spec_v1.md` §4.4
+- **Date**: 2026-08-22
+
+## DB-D048 — Reject ambiguous multi-DB path override（R1C Phase 1.1，H4）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: `--db all` 与 `--db-path` 互斥——`--db all` 同时操作 core/private，单一 db-path 会让两库指向同一文件。runner 在解析后、任何迁移前 `parser.error(...)` 拒绝（SystemExit 2，不创建文件、不执行 migration）。
+- **Alternatives**: 引入 --core-db-path/--private-db-path（拒绝——本轮保持简单）；允许同文件（拒绝——C/P 迁移写入同一 DB 是错误配置）。
+- **Rationale**: fail-fast 防错误配置。
+- **Consequences**: T-CLI-ALL-DBPATH-01（SystemExit 2 + foo.db 不存在）；单库 --db-path 仍可用。
+- **Affected Files**: `scripts/migrate.py`；`tests/test_migration_runner.py`；`docs/database/migration_runner_spec_v1.md` §5
+- **Date**: 2026-08-22
+
+## DB-D049 — Snapshot manifest contract（R1C Phase 1.1）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: 定义 snapshot manifest 字段契约：captured_at / snapshot_path / snapshot_sha256 / file_size / row_count / distinct_trade_dates / trade_date_distribution / distinct_ts_code / fetch_log_count / latest_fetch_time_raw / ts_code_suffixes / aggregates。后续 M3–M7 与 V1–V12 全部以该 manifest 为 reconciliation 依据；raw_artifact.content_hash 将来必须使用 snapshot_sha256。
+- **Alternatives**: 无固定 manifest 契约（拒绝——各阶段口径漂移）。
+- **Rationale**: 单一权威数字来源，杜绝 live/snapshot 混用。
+- **Consequences**: T-SNAPSHOT-HASH-01（snapshot_sha256 == sha256(snapshot bytes)）；测试断言 manifest 全字段。
+- **Affected Files**: `scripts/legacy_migration_utils.py`；`docs/database/legacy_daily_bars_migration_spec_v1.md` §3.5
+- **Date**: 2026-08-22

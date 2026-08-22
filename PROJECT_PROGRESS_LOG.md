@@ -500,3 +500,58 @@ Berlin 批准 R1B/R1B.1，授权 R1C Phase 0（Pre-Implementation Reconciliation
 ### Next
 
 - **Berlin review of R1C Phase 0/1**；批准后 R1C Phase 2 — Real DB Initialization / Real Legacy Migration Dry Run（不自动开始）。
+
+---
+
+## 2026-08-22 — R1C Phase 1.1 Final Pre-Production Hardening
+
+### Task
+
+进入 R1C Phase 2（真实 legacy + 真实 stock_basic）前，修正 Phase 1 剩余的 4 个实现级安全问题（H1–H4），并通过自动化测试验证。**只修 implementation hardening，不扩大 scope；不建真实 canonical DB。**
+
+### Corrections（H1–H4）
+
+- **H1 Frozen snapshot owns authoritative baseline**：live `data/market.db` 只做 health/readability preflight（`inspect_live_source_health`：file exists / readable / tables / columns / quick_check / observed hash，仅审计）；authoritative migration baseline 由 frozen snapshot 生成（`capture_snapshot_baseline`：snapshot_path / snapshot_sha256 / row_count / trade_date_distribution / distinct_ts_code / fetch_log_count / latest_fetch_time_raw / ts_code_suffixes / aggregates）；`validate_snapshot` **不再 reopen live DB**（只验证 snapshot 内部 + manifest 自洽 + hash）。删除 `capture_baseline()`。M3–M7 全部使用 snapshot manifest。（DB-D045/D049）
+- **H2 stock_basic duplicate fail-fast**：新增 `validate_stock_basic_input()` —— 构造 lookup 前显式扫描 duplicate ts_code（→ MappingGateError，含 offending ts_code，绝不 last-one-wins）并校验每行含 ts_code/name/list_date（缺失/空/畸形 → MappingGateError，不创建半完整 identity）。（DB-D046）
+- **H3 checksum raw-byte contract**：`migration checksum = SHA-256(exact raw migration file bytes)` 唯一；`raw_bytes = path.read_bytes()` → checksum 只算一次 → `sql = raw_bytes.decode("utf-8")`（UnicodeDecodeError → MigrationFileError）→ `apply_migration(..., checksum=checksum)`（apply 不再自行重算）；comparison 与 schema_migrations INSERT 同一变量。CRLF 下不再误判 CHECKSUM_MISMATCH。（DB-D047）
+- **H4 CLI ambiguity**：`--db all` 与 `--db-path` 互斥，`parser.error()` 拒绝（SystemExit 2，不创建文件、不执行迁移）。（DB-D048）
+
+### Tests Added（Phase 1 的 62 → 77）
+
+- T-SNAPSHOT-BASELINE-01（live 后增行+增 fetch_log，migration 仍以 snapshot manifest 6 行为准）
+- T-SNAPSHOT-HASH-01（snapshot_sha256 == sha256(snapshot bytes)，且 != live hash）
+- T-MAPPING-DUPLICATE-01（duplicate stock_basic ts_code → MappingGateError）
+- T-MAPPING-MISSING-FIELD-01（缺 ts_code/name/list_date → ABORT）
+- T-CHECKSUM-CRLF-01（CRLF 字节 APPLIED→SKIP 无 mismatch；tamper → MigrationChecksumError）
+- T-MIGRATION-ENCODING-01（非 UTF-8 → MigrationFileError）
+- T-CLI-ALL-DBPATH-01（SystemExit 2 + foo.db 不存在）
+- T-PROD-SYMLINK-01（symlink alias 生产路径 → ProductionWriteNotAuthorizedError）
+
+### Regression Result
+
+- **Ran 77 tests — OK（0 failed / 0 errors / 0 skipped）**
+- ATOMIC-01/02/03、plan/status no-write、production guard、constraint 17+、frozen source、timezone、privacy 全部继续 PASS（未删旧测试，仅修实现）
+
+### Files Modified
+
+- `scripts/legacy_migration_utils.py`（H1：inspect_live_source_health/capture_snapshot_baseline/validate_snapshot 重构；H2：validate_stock_basic_input）
+- `scripts/migrate.py`（H3：raw-byte checksum 单次计算 + apply 接收 checksum；H4：--db all+--db-path parser.error）
+- `tests/test_legacy_migration_fixture.py`（新 snapshot-baseline 用例 + duplicate/missing-field 用例）
+- `tests/test_migration_runner.py`（CRLF/encoding/CLI/symlink 用例）
+- `tests/test_schema.py`（apply_migration 新签名适配）
+- `docs/database/legacy_daily_bars_migration_spec_v1.md`（M0 health-only、M1B snapshot manifest、M1C internal validation、H2 输入校验）
+- `docs/database/migration_runner_spec_v1.md`（§4.4 raw-byte checksum 契约、§5 H4 CLI 约束）
+- `docs/database/r1c_phase1_review_v1.md`（Phase 1.1 Addendum C20–C27；Blocking findings = 0）
+- `docs/database/database_design_decisions_v1.md`（DB-D045–D049）
+- `PROJECT_STATUS.md`
+
+### Safety
+
+- real core.db = **NO**；real private.db = **NO**
+- real snapshot created = **NO**；market.db modified = **NO**（sha256 不变）
+- real stock_basic downloaded = **NO**；network/API calls = **NO**
+- real migration executed = **NO**（16,620 行原样保留）
+
+### Next
+
+- **Berlin approval for Phase 2**（Full-Scale Real-Data Staging Rehearsal：real market.db → real frozen snapshot → real stock_basic snapshot → staging core/private.db → full V1–V12 → Berlin review；不直接写正式 canonical DB）。

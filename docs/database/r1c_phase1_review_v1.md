@@ -178,3 +178,93 @@
 1. 真实生产 migration（Phase 2）执行前仍需 Berlin 再批准；
 2. 时区 CONFIRMED（Asia/Shanghai，证据见 §时间戳）：/etc/timezone + 系统 CST + git author 时间戳全部 +0800（与 fetch_log 时间窗口一致）；
 3. fixture 迁移用 deterministic synthetic 数据，真实 stock_basic 下载属 Phase 2 前置。
+
+---
+
+# R1C Phase 1.1 Final Pre-Production Hardening Addendum（2026-08-22）
+
+> R1C Phase 1.1 对 Phase 1 的 4 个 implementation hardening 问题（H1–H4）复查。
+> 格式：Severity / Problem / Code Change / Test Evidence / Residual Risk / Blocking?
+
+### C20. Snapshot baseline race elimination（H1）
+
+- **Severity**: HIGH — 已解决
+- **Problem**: 旧 `capture_baseline(live)` 查询 live 后关连接再读 bytes 算 hash；`validate_snapshot` 还会 reopen `manifest["source_path"]`（live）比 aggregate —— row_count/hash/snapshot/aggregate 可能来自不同版本，存在并发竞态。
+- **Code Change**: 拆分为 `inspect_live_source_health()`（只做 health preflight，`live_source_file_hash_observed` 仅审计）+ `capture_snapshot_baseline()`（从 frozen snapshot 生成 authoritative manifest）+ `validate_snapshot()`（只验证 snapshot 内部，**不再 reopen live**）。删除 `capture_baseline()`。
+- **Test Evidence**: T-SNAPSHOT-BASELINE-01（live 后增行+增 fetch_log，migration 仍以 snapshot manifest 6 行为准）；`test_validate_snapshot_does_not_open_live`（删除 live 文件后 validate_snapshot 仍 PASS）。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C21. Snapshot manifest authority（H1）
+
+- **Severity**: HIGH — 已解决
+- **Problem**: migration equality 校验引用 live baseline。
+- **Code Change**: manifest 现在包含 `snapshot_path / snapshot_sha256 / row_count / trade_date_distribution / distinct_ts_code / fetch_log_count / latest_fetch_time_raw / ts_code_suffixes / aggregates`，全部从 snapshot 生成；M3–M7 只使用该 manifest。
+- **Test Evidence**: T-SNAPSHOT-HASH-01（snapshot_sha256 == sha256(snapshot bytes)，且 != live hash）；T-BASELINE-01（实际 6 行，非 documented 5）。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C22. stock_basic duplicate detection（H2）
+
+- **Severity**: HIGH — 已解决
+- **Problem**: `basic = {row["ts_code"]: row for row in stock_basic}` 静默 last-one-wins，违反 strict mapping gate。
+- **Code Change**: 新增 `validate_stock_basic_input()` —— 构造 lookup 前显式扫描 duplicates（`MappingGateError` 含 offending ts_code）并校验每行含 ts_code/name/list_date（缺失/空 → `MappingGateError`）；`build_ts_code_mapping()` 首先调用它。
+- **Test Evidence**: T-MAPPING-DUPLICATE-01（600519.SH ×2 → MappingGateError，错误含 "duplicate" 与 ts_code）；T-MAPPING-MISSING-FIELD-01（缺 ts_code/name/list_date 各 → ABORT）；empty ts_code → ABORT。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C23. Migration checksum raw-byte consistency（H3）
+
+- **Severity**: HIGH — 已解决
+- **Problem**: `run_migrations` 用 `path.read_bytes()` 算 checksum，但 `apply_migration` 用 `sql.encode("utf-8")`（read_text 后再编码）—— Windows CRLF/newline normalization 下会不一致，导致已应用 migration 被误判 CHECKSUM_MISMATCH。
+- **Code Change**: checksum = `sha256_bytes(path.read_bytes())` **只计算一次**；`sql = raw_bytes.decode("utf-8")` 仅用于执行；`apply_migration` 接收 `checksum` 参数，**不再自行重算**；comparison 与 schema_migrations INSERT 用同一变量。
+- **Test Evidence**: T-CHECKSUM-CRLF-01（`\r\n` 字节 APPLIED → 二次 SKIP，无 mismatch；tamper 后 → MigrationChecksumError）；`test_checksum_insert_and_compare_same_value`。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C24. CRLF checksum stability（H3）
+
+- **Severity**: MEDIUM — 已解决
+- **Problem**: CRLF 下 raw bytes 与 text-encoded 不一致。
+- **Code Change**: 同上（raw bytes 契约）。
+- **Test Evidence**: T-CHECKSUM-CRLF-01 PASS。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C25. Invalid UTF-8 migration rejection（H3）
+
+- **Severity**: MEDIUM — 已解决
+- **Problem**: 非 UTF-8 migration 文件会裸抛 UnicodeDecodeError 或静默 replacement。
+- **Code Change**: `raw_bytes.decode("utf-8")` 捕获 `UnicodeDecodeError` → `MigrationFileError`。
+- **Test Evidence**: T-MIGRATION-ENCODING-01（`\xff\xfe` bytes → MigrationFileError）。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C26. CLI all/db-path ambiguity（H4）
+
+- **Severity**: HIGH — 已解决
+- **Problem**: `--db all --db-path /tmp/x.db` 会让 C+P migrations 写入同一文件，错误配置。
+- **Code Change**: `main()` 在解析参数后、任何迁移前 `parser.error("--db-path cannot be used with --db all; run --db core and --db private separately")`（SystemExit 2，不创建文件、不执行迁移）。
+- **Test Evidence**: T-CLI-ALL-DBPATH-01（SystemExit 2，foo.db 不存在）；`--db all --plan --db-path` 同样拒绝；`--db core --db-path` 正常可用。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C27. Regression suite（H1–H4）
+
+- **Severity**: HIGH — 已解决
+- **Problem**: 重构不得破坏既有 62 tests。
+- **Code Change**: 仅修实现（H1/H2/H3/H4），未删旧测试；旧测试中引用已移除 `capture_baseline` 的用例改用 snapshot 流程。
+- **Test Evidence**: **Ran 77 tests — OK（0 failed / 0 errors / 0 skipped）**。ATOMIC-01/02/03、plan/status no-write、production guard、constraint 17+、frozen source、timezone、privacy 全部继续 PASS。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### R1C Phase 1.1 汇总
+
+| Severity | 数量 | 状态 |
+|----------|------|------|
+| HIGH | 5（C20 C21 C22 C23 C26 C27 中计 5 项） | 已解决 |
+| MEDIUM | 3（C24 C25 + 计数修正） | 已解决 |
+
+**Blocking findings remaining = 0**
+
+**R1C PHASE 1.1 COMPLETE — READY FOR BERLIN APPROVAL OF PHASE 2**（仍不开始 Phase 2）

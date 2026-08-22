@@ -31,21 +31,24 @@ R9 — Quant Layer
 - **R1B.1 — Implementation Safety Corrections**（2026-08-22，S1–S6 修正）
 - **R1C Phase 0 — Pre-Implementation Reconciliation**（2026-08-22，P0-1/P0-2/P0-3）
 - **R1C Phase 1 — Temp-DB Implementation & Validation**（2026-08-22，62 tests OK）
+- **R1C Phase 1.1 — Final Pre-Production Hardening**（2026-08-22，H1–H4，77 tests OK）
 
 ## Current
 
-- **R1C Phase 1 artifacts awaiting Berlin review**
+- **R1C Phase 1/1.1 artifacts awaiting Berlin approval for Phase 2**
 - 实现：`scripts/migrate.py`（runner）+ `scripts/db_validators.py` + `scripts/timestamp_utils.py` + `scripts/legacy_migration_utils.py`
-- 测试：`tests/` 6 个文件，**Ran 62 tests — OK（0 failed / 0 errors）**：C0001/P0001 在 temp DB 真实执行、runner 原子性（ATOMIC-01/02/03）、17+ 约束、cross-db uid、synthetic legacy fixture（T-FROZEN-SOURCE-01/T-BASELINE-01/T-BACKUP-01/T-MAPPING-01/T-TIMEZONE-01/02）、隐私边界
-- Review：`docs/database/r1c_phase1_review_v1.md`（C1–C19 全 PASS，**Blocking findings = 0**）
-- Decision Register：DB-D001–D044
+- 测试：`tests/` 6 个文件，**Ran 77 tests — OK（0 failed / 0 errors / 0 skipped）**：C0001/P0001 temp 执行、runner 原子性、17+ 约束、cross-db uid、synthetic legacy fixture（T-FROZEN-SOURCE-01/T-BASELINE-01/T-SNAPSHOT-BASELINE-01/T-SNAPSHOT-HASH-01/T-BACKUP-01/T-MAPPING-01/T-MAPPING-DUPLICATE-01/T-MAPPING-MISSING-FIELD-01/T-TIMEZONE-01/02/T-CHECKSUM-CRLF-01/T-MIGRATION-ENCODING-01/T-CLI-ALL-DBPATH-01/T-PROD-SYMLINK-01）、隐私边界
+- Review：`docs/database/r1c_phase1_review_v1.md`（C1–C19 + Phase 1.1 Addendum C20–C27 全 PASS，**Blocking findings = 0**）
+- Decision Register：DB-D001–D049
 - 无进行中的实施工作；**未创建任何真实数据库，未迁移数据**
 
-## Validation（R1C Phase 1）
+## Validation（R1C Phase 1.1）
 
 - Temp core schema（C0001 17 表）PASS
 - Temp private schema（P0001 7 业务表 + schema_migrations）PASS
-- Runner atomicity PASS（事务原子 + checksum + plan/status 无写 + 生产路径保护）
+- Runner atomicity PASS（事务原子 + checksum raw-bytes + plan/status 无写 + 生产路径保护 + `--db all`+`--db-path` 拒绝）
+- Snapshot baseline authority PASS（live 只做 health preflight；authoritative manifest 从 frozen snapshot 生成；validate_snapshot 不重开 live）
+- stock_basic input validation PASS（duplicate / missing field → ABORT）
 - Constraint tests PASS（17+ 案例）
 - Synthetic legacy fixture PASS（frozen snapshot 唯一源 + dynamic baseline + mapping gate + backup Type B）
 - Privacy tests PASS（core 无 private 数据；private 无 credential）
@@ -66,14 +69,14 @@ R9 — Quant Layer
 
 ## Next
 
-- **Berlin reviews R1C Phase 0/1 artifacts（runner + 62 tests + review）**；批准后进入 R1C Phase 2 — Real DB Initialization / Real Legacy Migration Dry Run。
+- **Berlin reviews R1C Phase 1/1.1 artifacts（runner + 77 tests + review）**；批准后进入 R1C Phase 2 — Full-Scale Real-Data Staging Rehearsal（real market.db → real frozen snapshot → real stock_basic snapshot → staging core/private.db → full V1–V12 → Berlin review）。
 - 不自动开始 Phase 2。
 
 ## Not Authorized
 
-- R1C Phase 2（Real DB Initialization / Real Legacy Migration Dry Run）
+- R1C Phase 2（Full-Scale Real-Data Staging Rehearsal）
 - 创建 data/runtime/core.db 或 data/private/private.db
-- 迁移真实 daily_bars / 下载 stock_basic / 启用 dual-write
+- 真实 backup market.db / 下载真实 stock_basic / 迁移真实 daily_bars / 启用 dual-write
 - 修改 fetch_daily.py 生产行为
 - Dashboard 继续开发
 
@@ -113,15 +116,14 @@ R9 — Quant Layer
 4. ~~event_evidence 同源多版本证据是否需要 version 列~~ —— **已解决**：DB-D032/D036 evidence_key（R1 用 evidence_key；若未来需严格同源版本历史再评估 version 列）
 5. legacy fetched_at 时区：R1C 执行前必须 CONFIRMED（Asia/Shanghai 或 Berlin 确认），否则迁移暂停（S2/DB-D035）
 
-## Key Decisions（2026-08-22 R1C 增量，详见 DB-D039–D044）
+## Key Decisions（2026-08-22 R1C Phase 1.1 增量，详见 DB-D045–D049）
 
-- Dynamic migration-time baseline：documented 16,620 仅历史参考，M0 实测 manifest 为准（DB-D039）
-- Frozen snapshot = migration source of truth：M1 后所有读取只来自 snapshot（DB-D040）
-- 迁移阶段重排 M1/M2/M2B（raw_artifact 注册在 source/dataset 后）（DB-D041）
-- R1C Phase 1 只在 disposable temp DB 执行 SQL（DB-D042）
-- 生产路径写保护：PRODUCTION_WRITES_ENABLED=False，真实路径拒绝（DB-D043）
-- Migration runner 实现契约：事务/checksum/预检/plan/status 无写/分库历史（DB-D044）
+- Frozen snapshot owns authoritative migration baseline：live 只做 health preflight；manifest 从 snapshot 生成；validate_snapshot 不重开 live（DB-D045）
+- stock_basic duplicate identity input is fatal：显式校验，绝不 last-one-wins（DB-D046）
+- Migration checksum = SHA-256(exact raw migration file bytes)，单次计算（DB-D047）
+- --db all + --db-path 互斥，parser.error 拒绝（DB-D048）
+- Snapshot manifest contract：字段契约 + aggregates（DB-D049）
 
 ## Next Authorized Step
 
-- Berlin 审查 R1C Phase 0/1 → 批准后 R1C Phase 2 — Real DB Initialization / Real Legacy Migration Dry Run
+- Berlin 审查 R1C Phase 1/1.1 → 批准后 R1C Phase 2 — Full-Scale Real-Data Staging Rehearsal
