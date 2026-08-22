@@ -50,7 +50,8 @@
 
 - PK：`instrument_id`；**UID：`instrument_uid TEXT UNIQUE NOT NULL`**
 - FK：`entity_id` → entities（NULL：指数/FX/无发行主体）
-- UNIQUE：`(instrument_uid)`；`(instrument_type, primary_symbol, exchange_code)`
+- UNIQUE：`(instrument_uid)`
+- **无 `UNIQUE(instrument_type, primary_symbol, exchange_code)`（F1）**：ticker 可被历史重用（A 公司 ABC@XNAS 2020 delisted，B 公司 ABC@XNAS 2025 listed），符号组合不能是身份约束。`primary_symbol` 仅作当前展示/便利字段；**ticker is an attribute / identifier, not identity**；ticker 历史唯一性只由 `instrument_identifiers`（valid_from/valid_to + partial unique）控制。
 - Mutability：可变
 - 说明：provider 标识一律进 instrument_identifiers。
 
@@ -67,24 +68,25 @@
 - PK：`source_id`
 - UNIQUE：`(source_code)`
 - Mutability：可变
-- 说明：**`priority` 列不再具有 canonical 优先级含义（B9）**；保留为一般备注（或 R1B 直接弃用该列）。per-dataset 优先级进 `dataset_sources`。
+- 说明：**`priority` 字段已从设计中删除（F3）**，不再存在；所有 source precedence 统一由 `dataset_sources`（role + priority_rank）定义，避免遗留强语义字段被未来应用误用。
 
 ### 1.6 `datasets` — 逻辑数据集（PUBLIC）
 
 - PK：`dataset_id`
-- FK：`primary_source_id` → data_sources（NULL = canonical 多源数据集）
+- **无 `primary_source_id`（F2）**：已从设计中删除——主源判定只有一个真源模型：`datasets` → `dataset_sources` → `data_sources`。任何 provider 是主源只能由 `dataset_sources`（role='PRIMARY'）决定，杜绝双 source-of-truth。
 - UNIQUE：`(dataset_code)`
 - Mutability：可变
 
-### 1.7 `dataset_sources` — 数据集源优先级（PUBLIC，B9 新增）
+### 1.7 `dataset_sources` — 数据集源优先级（PUBLIC，B9 新增，F4 修正）
 
 - PK：`dataset_source_id`
 - FK：`dataset_id` → datasets；`source_id` → data_sources
-- UNIQUE：`(dataset_id, source_id)`
-- CHECK：`priority_role IN ('PRIMARY','FALLBACK','ARCHIVE')`
-- 其他：`is_active BOOLEAN NOT NULL DEFAULT 1`、`notes`
+- UNIQUE：`(dataset_id, source_id)`；**`(dataset_id, priority_rank)`**（F4：同一数据集内排序唯一）
+- **partial unique：`UNIQUE(dataset_id) WHERE role='PRIMARY' AND is_active=1`**（F4：每个 dataset 至多一个 active PRIMARY；历史/非活跃 PRIMARY 可共存）
+- CHECK：`role IN ('PRIMARY','FALLBACK','ARCHIVE')`
+- 字段：`priority_rank INTEGER NOT NULL`（数字越小优先级越高；PRIMARY=1，FALLBACK 依次 2、3…）、`is_active BOOLEAN NOT NULL DEFAULT 1`、`notes`、`created_at`、`updated_at`
 - Mutability：可变
-- 说明：canonical 优先级在此定义。示例：CN_EQUITY_DAILY→TUSHARE=PRIMARY/FMP=FALLBACK；US_EQUITY_DAILY→FMP=PRIMARY/ALPHA_VANTAGE=FALLBACK；US_FILINGS→SEC=PRIMARY。
+- 说明：示例——US_EQUITY_DAILY：FMP PRIMARY/rank1，Alpha Vantage FALLBACK/rank2，Yahoo FALLBACK/rank3；CN_EQUITY_DAILY：TUSHARE PRIMARY/1，FMP FALLBACK/2；US_FILINGS：SEC PRIMARY/1。
 
 ### 1.8 `ingest_runs` — 抓取运行审计（PUBLIC）
 
@@ -98,7 +100,8 @@
 
 - PK：`artifact_id`；**UID：`artifact_uid TEXT UNIQUE NOT NULL`**
 - FK：`dataset_id` → datasets；`source_id` → data_sources；`run_id` → ingest_runs（NULL=手工/非 ingest 产物）
-- UNIQUE：`(artifact_uid)`；`(content_hash)`
+- UNIQUE：`(artifact_uid)`；**partial `UNIQUE(run_id, content_hash) WHERE run_id IS NOT NULL`**（F5：同一次 run 内防重复 artifact）
+- **INDEX：`(content_hash)`（普通索引，非 UNIQUE）**（F5：相同内容可在不同 run / 不同 provider / 不同时间重复登记——这些 provenance 都有意义；hash 用于内容身份与 dedup detection，不等于 provenance record identity）
 - CHECK：`artifact_type IN ('FILE','URL','API_PAYLOAD','DB_SNAPSHOT','ARCHIVE','OTHER')`
 - 字段：`local_path_or_reference TEXT`、`content_hash TEXT NOT NULL`（SHA-256）、`retrieved_at`、`metadata JSON`
 - Mutability：append-only（raw 证据不覆盖）
@@ -123,10 +126,11 @@
 ### 1.12 `events` — 事件事实（PUBLIC）
 
 - PK：`event_id`；**UID：`event_uid TEXT UNIQUE NOT NULL`**
-- FK：`source_id` → data_sources（NULL=人工）
+- FK：**`discovered_by_source_id`** → data_sources（NULL=人工）
 - UNIQUE：`(event_uid)`；`(fingerprint)`（去重）
 - Mutability：append-only（status 可流转 NEW→CONFIRMED/SUPERSEDED/REJECTED）
 - 说明：**不再设单一 entity_id / instrument_id 列（B10）**；主体关系全部在 event_entities / event_instruments。
+- **`discovered_by_source_id` 语义（F7，Option B 采纳）**：表示**第一次让系统创建 normalized event 的 source（detection provenance）**——即“谁最先发现”。它**不是** primary evidence、**不是** canonical truth source；事件的全部真实来源由 `event_evidence` 表达。未来 dedupe 时可用它判断“谁先发现”。
 
 ### 1.13 `event_entities` — 事件主体（多 Entity）（PUBLIC，B10 新增）
 
@@ -146,23 +150,27 @@
 - Mutability：append-only
 - 索引：`(instrument_id)`
 
-### 1.15 `event_evidence` — 多源事件证据（PUBLIC，B11 新增）
+### 1.15 `event_evidence` — 多源事件证据（PUBLIC，B11 新增，F6 修正）
 
 - PK：`evidence_id`；**UID：`evidence_uid TEXT UNIQUE NOT NULL`**
 - FK：`event_id` → events；`source_id` → data_sources
-- UNIQUE：`(evidence_uid)`；`(event_id, content_hash)`（同事件同内容去重）；partial `UNIQUE(event_id) WHERE is_primary=1`（每事件至多一条主证据）
+- **UNIQUE：`(evidence_uid)`；`(event_id, source_id, source_reference)`**（F6：source-level evidence identity——同一事件、同一来源、同一引用只记一次）
+- **INDEX：`(content_hash)`（普通索引）**（F6：用于判断多个 evidence 是否内容相同；不同 source 提供相同内容可以共存，不丢 provenance）
+- partial `UNIQUE(event_id) WHERE is_primary=1`（每事件至多一条主证据）
 - CHECK：`evidence_type IN ('HKEX_FILING','SEC_FILING','COMPANY_IR','NEWS','API_PAYLOAD','MANUAL','OTHER')`
-- 字段：`source_reference TEXT`（URL/ref）、`published_at`、`detected_at`、`content_hash TEXT NOT NULL`、`is_primary BOOLEAN NOT NULL DEFAULT 0`、`metadata JSON`
+- 字段：`source_reference TEXT`（URL/ref，**可 NULL**）、`published_at`、`detected_at`、`content_hash TEXT NOT NULL`、`is_primary BOOLEAN NOT NULL DEFAULT 0`、`metadata JSON`
 - Mutability：append-only
 - 索引：`(event_id)`；`(detected_at)`
+- **NULL 行为（F6）**：SQLite UNIQUE 中 NULL 相互不冲突——若 `source_reference` 为 NULL 且同一 (event_id, source_id) 需多条证据，可用 `evidence_key`（deterministic normalized key，如 hash(source+ref) 或人工键）作为业务唯一键；R1B 若出现该需求再加，本轮不做过度设计。
 
-### 1.16 `event_analysis` — Generic 事件分析（PUBLIC，B7 收敛）
+### 1.16 `event_analysis` — Generic 事件分析（PUBLIC，B7 收敛，F8B 修正）
 
-- PK：`analysis_id`
+- PK：`analysis_id`；**UID：`analysis_uid TEXT UNIQUE NOT NULL`**（F8B：UUIDv4，跨库稳定身份，供 private.alerts 精确引用“哪一次 generic analysis 触发 alert”）
 - FK：`event_id` → events
-- UNIQUE：`(event_id, model_provider, model_id, prompt_version, analysis_version)`
+- UNIQUE：`(event_id, model_provider, model_id, prompt_version, analysis_version)`（**业务唯一防重复**，F8B 后保留）
 - Mutability：append-only（rerun = 新 analysis_version 新行）
 - 说明：**仅 generic market/event analysis**（importance_score 1–5、summary、bullish/bearish points、recommended_attention、raw_output、model 信息）。**禁止 thesis_id / portfolio relevance / 私人持仓（B7）**；私人 thesis 分析进 private.db `event_thesis_analysis`。
+- **角色分工（F8B）**：`analysis_uid` 负责稳定跨库 identity；业务 UNIQUE 负责防重复。两个角色不混淆。
 
 ### 1.17 `schema_migrations` — 迁移记录（PUBLIC, infra）
 
@@ -173,12 +181,13 @@
 
 ## 2. private.db —— Core 表（7 张）
 
-### 2.1 `accounts` — 账户（PRIVATE，B5 提升 Core）
+### 2.1 `accounts` — 账户（PRIVATE，B5 提升 Core，F8A 修正）
 
 - PK：`account_id`；**UID：`account_uid TEXT UNIQUE NOT NULL`**
 - UNIQUE：`(account_uid)`；`(account_name)`
-- CHECK：`account_type IN ('CASH','MARGIN','IBKR','BROKER','OTHER')`；`status IN ('ACTIVE','CLOSED')`
-- 字段：`account_name TEXT NOT NULL`、`broker TEXT`、`base_currency TEXT NOT NULL`（ISO 4217）
+- CHECK：`account_type IN ('CASH','MARGIN','RETIREMENT','PAPER','OTHER')`；`status IN ('ACTIVE','CLOSED')`
+- 字段：`account_name TEXT NOT NULL`、`broker TEXT`（券商名，如 IBKR/富途/券商 A）、`base_currency TEXT NOT NULL`（ISO 4217）
+- **account_type 与 broker 分离（F8A）**：`account_type` 只描述账户性质（现金/保证金/退休/模拟/其他），**不含 broker 名**（IBKR/BROKER 不是 type）；券商由 `broker` 字段表达。例如 broker='IBKR' + account_type='MARGIN'。
 - **不保存 password/token/credential（B5）**；凭据属外部系统，不入库。
 - Mutability：可变
 
@@ -227,16 +236,16 @@
 - Mutability：append-only（rerun = 新 analysis_version）
 - 索引：`(thesis_id)`
 
-### 2.7 `alerts` — 告警（PRIVATE，B8 移入）
+### 2.7 `alerts` — 告警（PRIVATE，B8 移入，F8B 扩展）
 
 - PK：`alert_id`；UID：`alert_uid TEXT UNIQUE NOT NULL`
 - UNIQUE：`(alert_key)`
-- 跨库引用：`event_uid TEXT NULL` → core.events.event_uid；`instrument_uid TEXT NULL` → core.instruments.instrument_uid
+- 跨库引用：`event_uid TEXT NULL` → core.events.event_uid；`instrument_uid TEXT NULL` → core.instruments.instrument_uid；**`generic_analysis_uid TEXT NULL` → core.event_analysis.analysis_uid**（F8B：按 alert 类型选择；非所有 alert 都需要）
 - 同库引用：`thesis_analysis_id` → event_thesis_analysis（NULL=非 thesis 驱动）
 - CHECK：`status IN ('PENDING','SENT','FAILED','ACKED','DISMISSED')`
 - 字段：`alert_type TEXT`（R6 定义）、`channel TEXT`、`rule_ref TEXT`、`delivered_at`、`created_at`、`updated_at`
 - Mutability：可变（状态流转）
-- 说明：**PRIVATE / RUNTIME USER STATE**，不再属于 PUBLIC core（B8）。
+- 说明：**PRIVATE / RUNTIME USER STATE**，不再属于 PUBLIC core（B8）。alert 可依据类型关联 event_uid / generic_analysis_uid / thesis_analysis_id 之一或多个。
 
 ---
 

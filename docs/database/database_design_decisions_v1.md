@@ -68,6 +68,7 @@
 - **Decision**: 新增 `dataset_sources`（dataset_id + source_id + priority_role=PRIMARY/FALLBACK/ARCHIVE）；**删除 data_sources.priority 的 canonical 含义**。示例：CN_EQUITY_DAILY→TUSHARE PRIMARY/FMP FALLBACK；US_EQUITY_DAILY→FMP PRIMARY/ALPHA_VANTAGE FALLBACK；US_FILINGS→SEC PRIMARY。
 - **Rationale**: 优先级必须按数据集定义，全局数值优先级语义模糊。
 - **Files**: `database_schema_design_v2_freeze_candidate.md` §1.7
+- **Extended by**: DB-D018（单真源：datasets.primary_source_id 移除）、DB-D019（priority_rank 顺序）——原决策文字不改写。
 
 ## DB-D010 — Multi-entity events
 
@@ -117,3 +118,75 @@
 - **Decision**: `Test1`（测试残留）删除；dashboard 三文件（`index.html` / `chart.umd.min.js` / `data/dashboard_data.js`）从根目录迁移至 `prototypes/dividend_dashboard/`（git mv 保留历史；`data/dashboard_data.js` 随 index.html 进入 `prototypes/dividend_dashboard/data/`，相对引用不变）。
 - **Rationale**: R1A.1 后 Berlin 批准独立 cleanup；与 `docs/prototypes/` 治理归类一致；不扩展、不重构 dashboard 功能。
 - **Files**: `docs/prototypes/dividend_dashboard_status_v1.md`（已同步更新）
+
+## DB-D017 — Instrument symbol is not identity（R1A.2，F1）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: 取消 `UNIQUE(instrument_type, primary_symbol, exchange_code)`；`primary_symbol` 仅为当前展示/便利字段；真正身份由 `instrument_uid` 承担；ticker 历史唯一性只由 `instrument_identifiers`（valid_from/valid_to + partial unique）控制。
+- **Rationale**: ticker 可被历史重用（Company A ABC@XNAS 2020 delisted → Company B ABC@XNAS 2025 listed）；符号组合不能是身份约束。
+- **Consequences**: instruments 表允许多行同 symbol 不同 instrument_uid；查询须经 instrument_identifiers 或 uid，不得用 symbol 当唯一键。
+- **Files**: `database_schema_design_v2_freeze_candidate.md` §1.3；`data_dictionary_v2_freeze_candidate.md` §1.3
+- **Date**: 2026-08-22
+
+## DB-D018 — Dataset source single source of truth（R1A.2，F2）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: 从 v2 设计删除 `datasets.primary_source_id`；哪个 provider 是主源，只能由 `dataset_sources` 决定（datasets → dataset_sources → data_sources）。
+- **Rationale**: `datasets.primary_source_id` 与 `dataset_sources.role='PRIMARY'` 并存构成双 source-of-truth，数据库无法判断听谁的。
+- **Consequences**: 任何“主源”查询必须走 dataset_sources；datasets 不再承载主源字段。
+- **Files**: `database_schema_design_v2_freeze_candidate.md` §1.6；`data_dictionary_v2_freeze_candidate.md` §1.6
+- **Date**: 2026-08-22
+
+## DB-D019 — Dataset source ordering（R1A.2，F4）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: `dataset_sources` 增加 `priority_rank INTEGER NOT NULL`（数字越小越优先）；`UNIQUE(dataset_id, priority_rank)`；保留 `UNIQUE(dataset_id, source_id)`；额外 partial unique `UNIQUE(dataset_id) WHERE role='PRIMARY' AND is_active=1`（每个 dataset 至多一个 active PRIMARY）。
+- **Rationale**: 仅 role 无法表达多个 FALLBACK 的顺序（FMP/AlphaVantage/Yahoo 谁先）。
+- **Consequences**: 优先级由 role + priority_rank 联合决定；写入层负责 rank 维护。
+- **Files**: `database_schema_design_v2_freeze_candidate.md` §1.7；`data_dictionary_v2_freeze_candidate.md` §1.7
+- **Date**: 2026-08-22
+
+## DB-D020 — Artifact hash vs provenance identity（R1A.2，F5）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: `raw_artifacts` 取消 `UNIQUE(content_hash)`，改普通 `INDEX(content_hash)`；防同 run 内重复用 `UNIQUE(run_id, content_hash) WHERE run_id IS NOT NULL`。
+- **Rationale**: 同一文件可能在不同时间/不同 provider/不同 run 重复抓取，这些 provenance 都有意义；hash 是内容身份/dedup detection，不等于 provenance record identity。
+- **Consequences**: 相同 hash 可多次登记（不同 run/source）；内容去重在查询层判断。
+- **Files**: `database_schema_design_v2_freeze_candidate.md` §1.9；`data_dictionary_v2_freeze_candidate.md` §1.9
+- **Date**: 2026-08-22
+
+## DB-D021 — Event evidence provenance uniqueness（R1A.2，F6）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: `event_evidence` 唯一性改为 `UNIQUE(event_id, source_id, source_reference)`（source-level evidence identity）+ `INDEX(content_hash)`；保留 partial `UNIQUE(event_id) WHERE is_primary=1`。source_reference 可 NULL；若需同 (event_id, source_id) 多条 NULL ref 证据，R1B 可加 `evidence_key`。
+- **Rationale**: 不同 source 提供相同内容（Tencent IR PDF vs HKEX PDF）本身就是 provenance，不得用 event_id+content_hash 丢弃。
+- **Consequences**: 同内容多源证据可共存；内容相同性检测走 content_hash 索引。
+- **Files**: `database_schema_design_v2_freeze_candidate.md` §1.15；`data_dictionary_v2_freeze_candidate.md` §1.15
+- **Date**: 2026-08-22
+
+## DB-D022 — Event discovery source semantics（R1A.2，F7）
+
+- **Status**: Adopted（2026-08-22，Option B）
+- **Decision**: `events.source_id` 更名为 `discovered_by_source_id`，语义 = **第一次让系统创建 normalized event 的 source（detection provenance）**；不是 primary evidence、不是 canonical truth source；事件真实来源由 `event_evidence` 表达。
+- **Rationale**: future event dedupe 时知道“谁最先发现”有价值；消除 primary/first/canonical/ingest 语义歧义。
+- **Consequences**: events 表只记录发现来源；证据链统一走 event_evidence。
+- **Files**: `database_schema_design_v2_freeze_candidate.md` §1.12；`data_dictionary_v2_freeze_candidate.md` §1.12；`core_domain_model_v2_freeze_candidate.md` §3.4
+- **Date**: 2026-08-22
+
+## DB-D023 — Account type normalization（R1A.2，F8A）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: `accounts.account_type IN ('CASH','MARGIN','RETIREMENT','PAPER','OTHER')`；broker 名（IBKR 等）只进 `broker` 字段。
+- **Rationale**: IBKR/BROKER 不是 account type（是 broker），原枚举语义污染；不做全球全类型大枚举。
+- **Consequences**: 示例 broker='IBKR' + account_type='MARGIN'；type 与 broker 解耦。
+- **Files**: `database_schema_design_v2_freeze_candidate.md` §2.1；`data_dictionary_v2_freeze_candidate.md` §2.1
+- **Date**: 2026-08-22
+
+## DB-D024 — Stable generic analysis UID（R1A.2，F8B）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: `event_analysis` 新增 `analysis_uid TEXT UNIQUE NOT NULL`（UUIDv4）；`alerts` 新增 `generic_analysis_uid TEXT NULL` 跨库引用 `core.event_analysis.analysis_uid`；业务 UNIQUE `(event_id, model_provider, model_id, prompt_version, analysis_version)` 保留防重复。
+- **Rationale**: future private.alerts 需精确跨库引用“哪一次 generic analysis 触发了 alert”；analysis_uid 负责稳定跨库 identity，业务 unique 负责防重复，两角色不混淆。
+- **Consequences**: alert 可按类型关联 event_uid / generic_analysis_uid / thesis_analysis_id 之一或多个；非所有 alert 都需要 generic_analysis_uid。
+- **Files**: `database_schema_design_v2_freeze_candidate.md` §1.16/§2.7；`data_dictionary_v2_freeze_candidate.md` §1.16/§2.7；`storage_architecture_v2_freeze_candidate.md` §2.2
+- **Date**: 2026-08-22

@@ -26,18 +26,21 @@ R9 — Quant Layer
 - R1A v1 — Core Domain Model & Data Contract（2026-08-17，设计未实施）
 - Credential Security（2026-08-17，API.txt 保密规则）
 - R1A.1 — Recovery, Repository Reconciliation & Schema Freeze Candidate（2026-08-22）
+- R1A.2 — Final Freeze Corrections（2026-08-22，F1–F8 修正）
 
 ## Current
 
-- **R1A v2 Freeze Candidate 待 Berlin 审查**：docs/database/ 下 7 份文档
+- **R1A v2 Freeze Candidate —— Freeze Readiness: READY FOR BERLIN APPROVAL**
+- docs/database/ 下 7 份文档：
   - core_domain_model_v2_freeze_candidate.md
   - database_schema_design_v2_freeze_candidate.md
   - data_dictionary_v2_freeze_candidate.md
   - storage_architecture_v2_freeze_candidate.md
   - daily_bars_migration_plan_v2_freeze_candidate.md
-  - r1a1_schema_review_v2.md（Blocking findings = 0）
-  - database_design_decisions_v1.md（DB-D001–D015）
+  - r1a1_schema_review_v2.md（R1A.2 Addendum：Blocking findings = 0）
+  - database_design_decisions_v1.md（DB-D001–D024）
 - 无进行中的实施工作；未创建任何新数据库，未迁移数据
+- **注意：仍是 FREEZE CANDIDATE，不是 FROZEN。**
 
 ## Existing Prototype
 
@@ -49,7 +52,7 @@ R9 — Quant Layer
 
 ## Next
 
-- **Berlin reviews the R1A v2 Freeze Candidate**。若批准：状态更新为 Frozen，然后授权 R1B — SQL DDL & Migration Specification。
+- **Berlin final review and freeze approval**：审查 R1A v2 Freeze Candidate（Freeze Readiness: READY FOR BERLIN APPROVAL）。若批准：标记 R1A v2 FROZEN，然后授权 R1B — SQL DDL & Migration Specification。
 - 不自动开始 R1B。
 
 ## Not Authorized
@@ -73,8 +76,8 @@ R9 — Quant Layer
 
 ## Data Status
 
-- `data/market.db`：A股日线（`daily_bars` 5540 条 + `fetch_log`）—— 未改动，legacy 保留（2026-08-22 复核）
-- 最近一次抓取：2026-08-16
+- `data/market.db`：A股日线（`daily_bars` **16,620 行 = 3 个交易日**（08-14: 5,540 / 08-17: 5,539 / 08-20: 5,541；distinct ts_code 5,546）+ `fetch_log` 3 条）—— 未改动，legacy 保留（2026-08-22 只读复核；sha256 与 R1A.1 一致）
+- 最近一次抓取（fetch_log）：2026-08-20 21:55（5541 行）
 - canonical 设计目标：`data/runtime/core.db`（public）+ `data/private/private.db`（private），R1B 实施
 
 ## Runtime Status
@@ -91,16 +94,17 @@ R9 — Quant Layer
 3. market_prices_daily upsert 策略：受控 upsert vs 严格版本化（raw_artifacts 已 Core，可支撑 price_revisions）
 4. event_evidence 同源多版本证据是否需要 version 列（R1B 决策点）
 
-## Key Decisions（2026-08-22 R1A.1 增量）
+## Key Decisions（2026-08-22 R1A.2 增量，详见 DB-D017–D024）
 
-- 跨库引用一律使用 `*_uid`（UUIDv4）；INTEGER PK 仅作单库 surrogate（DB-D003）
-- Entity 标识（LEI/SEC_CIK）与 Instrument 标识（ticker/ISIN/FIGI/CUSIP）严格分属（DB-D002）
-- accounts 提升 Core；positions 账户级 OPEN 唯一（DB-D006/D007）
-- generic analysis（core）与 private thesis analysis（private）分离；alerts 移入 private（DB-D008/D011）
-- dataset_sources 定义 per-dataset 源优先级；data_sources.priority 弃用（DB-D009）
-- raw_artifacts 提升 Core；行情带 ingest_run_id 血缘（DB-D012）
-- legacy 双完整性定义：normalized completeness + raw provenance completeness（B14）
+- Instrument symbol is not identity：去 UNIQUE，ticker 历史归 instrument_identifiers（F1 / DB-D017）
+- Dataset source 单真源：datasets.primary_source_id 删除（F2 / DB-D018）
+- dataset_sources 增加 priority_rank 顺序（F4 / DB-D019）
+- raw_artifacts hash 非唯一，run 内去重（F5 / DB-D020）
+- event_evidence source-level 唯一性（F6 / DB-D021）
+- events.source_id → discovered_by_source_id（F7 / DB-D022）
+- account_type 规范化（F8A / DB-D023）
+- event_analysis.analysis_uid + alerts.generic_analysis_uid（F8B / DB-D024）
 
 ## Next Authorized Step
 
-- Berlin 审查 R1A v2 Freeze Candidate → 批准后 Frozen → 授权 R1B
+- Berlin 最终审查 R1A v2 Freeze Candidate → 批准后标记 FROZEN → 授权 R1B

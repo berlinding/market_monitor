@@ -81,6 +81,7 @@ Tencent Holdings / NVIDIA / 美联储 / 中国政府。
 - 价格、持仓、交易**原则上关联 Instrument**。
 - `instrument_type`：EQUITY / ADR / ETF / INDEX（R1 主力），预留 FX / FUTURE / OPTION / BOND / COMMODITY / CRYPTO。
 - **identity（B3）**：`instrument_id`（INTEGER surrogate）+ `instrument_uid`（UUIDv4 稳定身份）。
+- **ticker 不是身份（F1）**：`primary_symbol` 只是当前展示/便利字段，**不参与身份唯一性**；ticker 历史重用/变更的唯一性完全由 `instrument_identifiers`（valid_from/valid_to + partial unique）控制。**ticker is an attribute / identifier, not identity.**
 - **Instrument 级标识**：ticker / ISIN / FIGI / CUSIP / SEDOL / exchange symbol 属于 Instrument（`instrument_identifiers`）——**与 Entity 标识严格分属**（B1）。
 
 ### 3.3 Identifier（provider 中立标识）
@@ -94,7 +95,8 @@ Tencent Holdings / NVIDIA / 美联储 / 中国政府。
 
 ### 3.4 Event（事件事实，多主体 + 多源证据）
 
-- `events` 只存确定性事实（event_uid、fingerprint 去重、event_type、time、title/summary、source、status）。
+- `events` 只存确定性事实（event_uid、fingerprint 去重、event_type、time、title/summary、`discovered_by_source_id`、status）。
+- **发现来源语义（F7，Option B）**：`events.discovered_by_source_id` 表示**第一次让系统创建 normalized event 的 source（detection provenance）**；它**不是** primary evidence、**不是** canonical truth source。事件的所有真实来源（HKEX/SEC/IR/NEWS/API/manual）统一由 `event_evidence` 表达。
 - **多主体（B10）**：事件 ↔ Entity 关系进 `event_entities`（role：PRIMARY / ACQUIRER / TARGET / ISSUER / AFFECTED / RELATED）；事件 ↔ Instrument 关系进 `event_instruments`（同 role 集）。`events` **不再设单一 entity_id 列**，杜绝"唯一主体"假设与身份冲突。
 - **多源证据（B11）**：一个 normalized event 可对应 HKEX filing / SEC filing / company IR / news / API payload / manual evidence，全部进 `event_evidence`（content_hash 去重、is_primary 标记主证据、source_reference 可回溯）。
 - 宏观事件（美联储利率决议）可以是零 entity、零 instrument，只有 evidence + analysis。
@@ -107,17 +109,18 @@ Tencent Holdings / NVIDIA / 美联储 / 中国政府。
 
 ### 3.6 Data Operations（数据运营，血缘完整化）
 
-- `data_sources`：provider 定义。`priority` 列**不再有 canonical 含义**（B9），仅保留为一般备注字段（或弃用）。
-- `datasets`：逻辑数据集（CN_EQUITY_DAILY / US_EQUITY_DAILY / US_FILINGS…）。
+- `data_sources`：provider 定义。**`priority` 字段已从 Freeze Candidate 中删除（F3）**；所有 source precedence 统一由 `dataset_sources` 定义。
+- `datasets`：逻辑数据集（CN_EQUITY_DAILY / US_EQUITY_DAILY / US_FILINGS…）。**不含 `primary_source_id`（F2）**——主源判定只有一个真源：`dataset_sources`。
 - **`dataset_sources`（B9）**：数据集 × 数据源 × 优先级角色：
 
-  | dataset_code | source | priority_role |
-  |--------------|--------|---------------|
-  | CN_EQUITY_DAILY | TUSHARE | PRIMARY |
-  | CN_EQUITY_DAILY | FMP | FALLBACK |
-  | US_EQUITY_DAILY | FMP | PRIMARY |
-  | US_EQUITY_DAILY | ALPHA_VANTAGE | FALLBACK |
-  | US_FILINGS | SEC | PRIMARY |
+  | dataset_code | source | priority_role | priority_rank |
+  |--------------|--------|---------------|---------------|
+  | CN_EQUITY_DAILY | TUSHARE | PRIMARY | 1 |
+  | CN_EQUITY_DAILY | FMP | FALLBACK | 2 |
+  | US_EQUITY_DAILY | FMP | PRIMARY | 1 |
+  | US_EQUITY_DAILY | ALPHA_VANTAGE | FALLBACK | 2 |
+  | US_EQUITY_DAILY | YAHOO | FALLBACK | 3 |
+  | US_FILINGS | SEC | PRIMARY | 1 |
 
 - `ingest_runs`：每次抓取审计。
 - **`raw_artifacts`（B12，Core）**：canonical 数据的原始证据（文件/URL/API payload/DB 快照），带 content_hash（SHA-256），供完整追溯。
@@ -180,7 +183,7 @@ Tencent Holdings / NVIDIA / 美联储 / 中国政府。
 
 规则：
 
-1. `entity_uid` / `instrument_uid` / `event_uid` / `account_uid` / `artifact_uid` / `evidence_uid` 均为 `TEXT UNIQUE NOT NULL`，由应用层在 INSERT 时生成。
+1. `entity_uid` / `instrument_uid` / `event_uid` / `account_uid` / `artifact_uid` / `evidence_uid` / `analysis_uid` 均为 `TEXT UNIQUE NOT NULL`，由应用层在 INSERT 时生成。
 2. `entity_id` / `instrument_id` / `event_id` 等 INTEGER PRIMARY KEY 仅作**单库内部 surrogate**（SQLite ROWID 别名），**禁止**跨库引用。
 3. **跨库引用一律用 UID**：private.db → core.db 只写 `entity_uid` / `instrument_uid` / `event_uid`，不写 INTEGER id、不依赖 ROWID。
 4. 重建 core.db：数据（含 UID 列）从备份/导出复制，UID 不变 → 跨库引用不失效。**UID 是身份，ROWID 是实现细节。**

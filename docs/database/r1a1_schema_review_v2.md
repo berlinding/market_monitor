@@ -214,3 +214,117 @@
 1. R19 — 跨库 uid 引用一致性依赖应用层校验 + 定期孤儿检查（R2 自动化后消除）；
 2. R4 — UUID 无序性（行数级影响可忽略）；
 3. R18 — 迁移执行纪律依赖 R1B 脚本完整实现 V1–V9。
+
+---
+
+# R1A.2 Final Freeze Review Addendum（2026-08-22）
+
+> R1A.2 对 v2 Freeze Candidate 做最后小范围结构修正后的复查。方法同前：Finding / Severity / Affected Tables / Problem / Resolution / Residual Risk / Blocking?
+
+### F22. Instrument ticker reuse（ticker 重用）
+
+- **Severity**: HIGH — 已解决
+- **Affected**: `instruments` / `instrument_identifiers`
+- **Problem**: v2 保留 `UNIQUE(instrument_type, primary_symbol, exchange_code)`，会阻止历史 ticker 重用（Company A ABC@XNAS 2020 delisted → Company B ABC@XNAS 2025 无法建立）。
+- **Resolution**: 取消该 UNIQUE（F1）；`primary_symbol` 仅为展示/便利字段；身份由 `instrument_uid` 承担；ticker 历史唯一性只由 `instrument_identifiers`（valid_from/valid_to + partial unique）控制。明确 **ticker is an attribute / identifier, not identity**。
+- **Residual risk**: 低。应用层不得再用 symbol 组合做唯一查找。
+- **Blocking?**: No
+
+### F23. Dataset source double truth（数据集源双重真源）
+
+- **Severity**: HIGH — 已解决
+- **Affected**: `datasets` / `dataset_sources`
+- **Problem**: `datasets.primary_source_id` 与 `dataset_sources.role='PRIMARY'` 并存，两个 source-of-truth，数据库无法判断听谁的。
+- **Resolution**: 从 v2 设计删除 `datasets.primary_source_id`（F2）；主源只能由 `dataset_sources` 决定。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### F24. Fallback ordering（fallback 顺序）
+
+- **Severity**: MEDIUM — 已解决
+- **Affected**: `dataset_sources`
+- **Problem**: 仅 role（PRIMARY/FALLBACK/ARCHIVE）无法表达多个 FALLBACK 的顺序（FMP/AlphaVantage/Yahoo 谁先）。
+- **Resolution**: `dataset_sources` 增加 `priority_rank INTEGER NOT NULL`（数字小优先）；`UNIQUE(dataset_id, priority_rank)` + 保留 `UNIQUE(dataset_id, source_id)`；额外用 partial unique `UNIQUE(dataset_id) WHERE role='PRIMARY' AND is_active=1` 保证每个 dataset 至多一个 active PRIMARY（F4）。
+- **Residual risk**: 低。rank 维护靠应用层写入纪律。
+- **Blocking?**: No
+
+### F25. Raw artifact provenance duplication（raw 溯源重复）
+
+- **Severity**: MEDIUM — 已解决
+- **Affected**: `raw_artifacts`
+- **Problem**: `UNIQUE(content_hash)` 阻止同一文件在不同 run / 不同 provider / 不同时间重复登记，丢失有意义 provenance。
+- **Resolution**: 取消 `UNIQUE(content_hash)`，改普通 `INDEX(content_hash)`；防同 run 内重复用 `UNIQUE(run_id, content_hash) WHERE run_id IS NOT NULL`（F5）。hash 是内容身份/dedup detection，不等于 provenance record identity。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### F26. Event evidence provenance loss（事件证据溯源丢失）
+
+- **Severity**: HIGH — 已解决
+- **Affected**: `event_evidence`
+- **Problem**: `UNIQUE(event_id, content_hash)` 使同一内容来自不同 source（Tencent IR PDF vs HKEX PDF）无法共存，丢失 provenance。
+- **Resolution**: 改为 `UNIQUE(event_id, source_id, source_reference)`（source-level evidence identity）+ `INDEX(content_hash)` 内容相似检测；`is_primary` 单主约束保留（F6）。source_reference 可 NULL；若未来需要同 (event_id, source_id) 多条 NULL ref 证据，R1B 可加 `evidence_key`。
+- **Residual risk**: 低（NULL ref 场景留待 R1B 决策）。
+- **Blocking?**: No
+
+### F27. Event source ambiguity（事件来源语义歧义）
+
+- **Severity**: MEDIUM — 已解决
+- **Affected**: `events`
+- **Problem**: `events.source_id` 语义不明（primary source / first source / canonical source / ingest provider?）。
+- **Resolution**: 采纳 **Option B**——更名为 `discovered_by_source_id`，语义 = 第一次让系统创建 normalized event 的 source（**detection provenance**）；不是 primary evidence、不是 canonical truth source（F7）。
+- **Residual risk**: 低。写入层需按语义赋值。
+- **Blocking?**: No
+
+### F28. Account semantic normalization（账户语义规范化）
+
+- **Severity**: MEDIUM — 已解决
+- **Affected**: `accounts`
+- **Problem**: `account_type` 含 IBKR/BROKER——不是 type，是 broker，与 `broker` 字段重复且语义污染。
+- **Resolution**: `account_type IN ('CASH','MARGIN','RETIREMENT','PAPER','OTHER')`（F8A）；broker 名（IBKR 等）只进 `broker` 字段。示例：broker='IBKR' + account_type='MARGIN'。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### F29. Analysis cross-db identity（分析跨库身份）
+
+- **Severity**: MEDIUM — 已解决
+- **Affected**: `event_analysis` / `alerts`
+- **Problem**: generic analysis 无稳定 UID，future private.alerts 无法精确跨库引用“哪一次 analysis 触发了 alert”。
+- **Resolution**: `event_analysis.analysis_uid TEXT UNIQUE NOT NULL`（UUIDv4，F8B）；`alerts.generic_analysis_uid TEXT NULL` 跨库引用 analysis_uid；业务 UNIQUE `(event_id, model_provider, model_id, prompt_version, analysis_version)` 保留防重复。两个角色不混淆。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### R1A.2 汇总
+
+| Severity | 数量 | 状态 |
+|----------|------|------|
+| HIGH | 3（F22 F23 F26） | 已解决 |
+| MEDIUM | 5（F24 F25 F27 F28 F29） | 已解决 |
+| LOW | 0 | — |
+
+**Blocking findings remaining = 0**
+
+---
+
+# Freeze Readiness Checklist（R1A.2）
+
+| # | 检查项 | 结果 |
+|---|--------|------|
+| 1 | Entity identity stable（entity_uid UUIDv4） | ✅ PASS |
+| 2 | Instrument identity stable（instrument_uid UUIDv4） | ✅ PASS |
+| 3 | ticker reuse supported（F1：symbol 去 UNIQUE，identifiers 控制历史） | ✅ PASS |
+| 4 | cross-db UID stable（仅 uid 跨库，重建不漂移） | ✅ PASS |
+| 5 | no duplicate source-of-truth fields（F2：primary_source_id 删除） | ✅ PASS |
+| 6 | dataset source ordering deterministic（F4：priority_rank + UNIQUE） | ✅ PASS |
+| 7 | raw provenance preserved（F5：hash 非唯一，run 内去重） | ✅ PASS |
+| 8 | event evidence provenance preserved（F6：source-level 唯一） | ✅ PASS |
+| 9 | event source semantics unambiguous（F7：discovered_by_source_id） | ✅ PASS |
+| 10 | generic/private analysis separated（B7：event_analysis vs event_thesis_analysis） | ✅ PASS |
+| 11 | accounts semantics normalized（F8A：type 与 broker 分离） | ✅ PASS |
+| 12 | alert cross-db references stable（F8B：generic_analysis_uid） | ✅ PASS |
+| 13 | legacy migration reversible（B14：备份 + raw_artifact + SHA-256） | ✅ PASS |
+| 14 | private/public boundaries clean（core/private 分库 + alerts/thesis 归 private） | ✅ PASS |
+| 15 | no R1B implementation performed（本轮仅文档修正） | ✅ PASS |
+
+**Freeze Readiness: READY FOR BERLIN APPROVAL**
+
+> 注意：这仍然是 **FREEZE CANDIDATE**，不是 FROZEN。Berlin 最终批准后方可标记 Frozen 并授权 R1B。

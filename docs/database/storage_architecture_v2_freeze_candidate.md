@@ -37,7 +37,9 @@ data/
 
 v1 采用"private.db 只存 `instrument_id` / `entity_id` 整数引用"；v2 修正为：
 
-> **跨库引用一律使用 `entity_uid` / `instrument_uid` / `event_uid`（UUIDv4 TEXT），禁止引用 INTEGER surrogate 或 ROWID。**
+> **跨库引用一律使用 `entity_uid` / `instrument_uid` / `event_uid` / `analysis_uid`（UUIDv4 TEXT），禁止引用 INTEGER surrogate 或 ROWID。**
+
+（F8B 补充：`analysis_uid` 用于 private.alerts → core.event_analysis 的跨库精确引用。）
 
 理由：
 
@@ -61,7 +63,7 @@ JOIN core.instruments i ON i.instrument_uid = p.instrument_uid;
 ### 2.4 一致性要点（v2 更新）
 
 - UID 分配唯一真源在 core.db 的 `*_uid` 列；private.db 永不自行生成 core 主体的 uid（只引用）。
-- 应用层提供 `ensure_instrument_uid(uid)` / `ensure_entity_uid(uid)` / `ensure_event_uid(uid)` 校验（写 private 前检查 core 存在）。
+- 应用层提供 `ensure_instrument_uid(uid)` / `ensure_entity_uid(uid)` / `ensure_event_uid(uid)` / `ensure_analysis_uid(uid)` 校验（写 private 前检查 core 存在）。
 - 定期孤儿引用检查脚本（对比 core 不存在的 uid），R1 阶段手工/脚本触发。
 
 ---
@@ -99,7 +101,7 @@ data/
 ```
 Data Source (data_sources)
    ↓
-Dataset (datasets) + Dataset Source (dataset_sources: PRIMARY/FALLBACK)
+Dataset (datasets) + Dataset Source (dataset_sources: role + priority_rank 决定顺序)
    ↓
 Ingest Run (ingest_runs)
    ↓

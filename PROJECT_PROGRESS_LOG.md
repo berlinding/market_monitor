@@ -274,3 +274,66 @@ Berlin 在项目根新增 `API.txt`（含全部 API token，包括 GitHub token�
 ### Next Step
 
 - 保持 Berlin 审查 R1A v2 Freeze Candidate 的待办不变。
+
+---
+
+## 2026-08-22 — R1A.2 Final Freeze Corrections
+
+### Task
+
+冻结前最后修正：对 R1A v2 Freeze Candidate 做 8 项小范围结构修正（F1–F8），消除剩余歧义，产出 Freeze Readiness: READY FOR BERLIN APPROVAL。**不重新设计、不开始 R1B、不建库。**
+
+### Issues Corrected（F1–F8）
+
+- **F1 Instrument ticker uniqueness**：取消 `UNIQUE(instrument_type, primary_symbol, exchange_code)`；primary_symbol 仅展示/便利字段；ticker 历史唯一性归 instrument_identifiers；明确 ticker is attribute, not identity。
+- **F2 Dataset source single source of truth**：删除 `datasets.primary_source_id`；主源只由 `dataset_sources` 决定。
+- **F3 Remove global data source priority**：彻底删除 `data_sources.priority`（不再保留废弃字段）。
+- **F4 Dataset source fallback ordering**：`dataset_sources` 增加 `priority_rank`（INTEGER，小者优先）+ `UNIQUE(dataset_id, priority_rank)` + partial unique `UNIQUE(dataset_id) WHERE role='PRIMARY' AND is_active=1`（单 active PRIMARY）。
+- **F5 Raw artifact hash semantics**：`raw_artifacts` 取消 `UNIQUE(content_hash)` → `INDEX(content_hash)` + `UNIQUE(run_id, content_hash) WHERE run_id IS NOT NULL`；相同内容可在不同 run/source 重复登记。
+- **F6 Event evidence provenance semantics**：`event_evidence` 唯一性改 `UNIQUE(event_id, source_id, source_reference)` + `INDEX(content_hash)`；不同 source 相同内容可共存。
+- **F7 Event source semantics**：`events.source_id` → **`discovered_by_source_id`**（Option B：detection provenance，非 primary evidence / canonical truth）。
+- **F8A Account type normalization**：`account_type IN ('CASH','MARGIN','RETIREMENT','PAPER','OTHER')`，broker 名只进 `broker` 字段。
+- **F8B Analysis stable UID**：`event_analysis.analysis_uid TEXT UNIQUE NOT NULL`（UUIDv4）；`alerts.generic_analysis_uid TEXT NULL` 跨库引用；业务 UNIQUE 保留防重复。
+
+### Key Changes
+
+- instrument symbol uniqueness removed（F1）
+- datasets.primary_source_id removed（F2）
+- data_sources.priority removed（F3）
+- dataset_sources priority_rank added（F4）
+- artifact hash semantics corrected（F5）
+- event evidence uniqueness corrected（F6）
+- event source semantics clarified（F7）
+- account type corrected（F8A）
+- analysis_uid added（F8B）
+
+### Files Modified（直接修改 v2 Freeze Candidate，未新建 v3）
+
+- `docs/database/core_domain_model_v2_freeze_candidate.md`（F1/F2/F3/F4/F7/F8B uid 清单）
+- `docs/database/database_schema_design_v2_freeze_candidate.md`（全部 F1–F8B）
+- `docs/database/data_dictionary_v2_freeze_candidate.md`（全部 F1–F8B）
+- `docs/database/storage_architecture_v2_freeze_candidate.md`（analysis_uid 跨库引用 + priority_rank 血缘链）
+- `docs/database/daily_bars_migration_plan_v2_freeze_candidate.md`（V1 基准行数修正为 16,620 = 3 个交易日）
+- `docs/database/r1a1_schema_review_v2.md`（追加 R1A.2 Final Freeze Review Addendum F22–F29 + Freeze Readiness Checklist）
+- `docs/database/database_design_decisions_v1.md`（追加 DB-D017–D024；DB-D009 加 Extended-by 注释）
+- `PROJECT_STATUS.md`（R1A.2 完成状态 + 数据事实修正）
+
+### Not Done（明确）
+
+- ❌ 未创建数据库 / 未写生产 DDL
+- ❌ 未迁移 daily_bars（16,620 行 / 3 个交易日全部保留，sha256 未变）
+- ❌ 未修改 fetch_daily.py / 生产行情 pipeline
+- ❌ 未接 FMP / SEC / OpenBB，未安装 package / Skill
+- ❌ 未执行 Parquet / DuckDB
+- ❌ 未开始 R1B
+- ❌ 未继续开发 dashboard
+- ❌ 未读取 / 未提交 API.txt（check-ignore 确认忽略）
+- ❌ 未写 FROZEN（保持 FREEZE CANDIDATE）
+
+### Legacy Data 复核
+
+- `data/market.db` 只读验证：daily_bars = **16,620 行**（08-14: 5,540 / 08-17: 5,539 / 08-20: 5,541；distinct ts_code 5,546），fetch_log 3 条，最近抓取 2026-08-20 21:55。早期文档“5,540 条”为 08-14 单日口径；sha256 = `93562960aa...d599004` 与 R1A.1 一致，**未执行任何写入**。
+
+### Next
+
+- **Berlin final review and freeze approval**：审查 R1A v2 Freeze Candidate（Freeze Readiness: READY FOR BERLIN APPROVAL）；批准后标记 FROZEN 并授权 R1B — SQL DDL & Migration Specification（不自动开始）。

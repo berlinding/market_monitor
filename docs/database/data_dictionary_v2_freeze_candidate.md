@@ -13,7 +13,7 @@
 |------|------|
 | `*_uid` | 关键表新增 `TEXT UNIQUE NOT NULL`（UUIDv4）；跨库引用只用 uid |
 | `content_hash` | 一律 SHA-256 hex（64 字符小写） |
-| `data_sources.priority` | **弃用 canonical 含义**（B9），R1B 不再使用；保留列作备注或移除 |
+| `data_sources.priority` | **已删除（F3）**：Freeze Candidate 中不再存在该字段；优先级统一由 `dataset_sources`（role + priority_rank）定义 |
 
 通用字段（created_at / updated_at / status）与 v1 一致，不再逐表重复。
 
@@ -55,7 +55,7 @@ CHECK：`identifier_type IN ('LEI','SEC_CIK','PROVIDER_COMPANY_ID','GLEIF','OTHE
 | instrument_id | integer | NO | PK | 单库 surrogate |
 | **instrument_uid** | text | NO | **UNIQUE** | UUIDv4 稳定身份；跨库引用工具 | **新增（B3）** |
 
-其余与 v1 一致。
+其余与 v1 一致，除：**`primary_symbol` 不再参与唯一约束（F1）**——`UNIQUE(instrument_type, primary_symbol, exchange_code)` 已移除；primary_symbol 仅作展示/便利字段；ticker 历史唯一性由 `instrument_identifiers`（valid_from/valid_to + partial unique）控制。
 
 ### 1.4 instrument_identifiers（C）— 不变（v1）
 
@@ -65,11 +65,17 @@ provider 中立 Instrument 标识（TICKER/EXCHANGE_SYMBOL/ISIN/CUSIP/SEDOL/FIGI
 
 | field | 变更 |
 |-------|------|
-| priority | **弃用 canonical 含义（B9）**；保留列作一般备注，R1B 不再读取 |
+| priority | **已删除（F3）**：不再存在；所有 source precedence 统一由 `dataset_sources` 定义 |
 
 其余与 v1 一致。
 
-### 1.6 datasets（C）— 不变（v1）
+### 1.6 datasets（C）— v2 变更（F2）
+
+| field | 变更 |
+|-------|------|
+| primary_source_id | **已移除（F2）**：主源判定单真源，统一由 `dataset_sources` 决定 |
+
+其余与 v1 一致。
 
 ### 1.7 dataset_sources（C）— **新增（B9）**
 
@@ -79,12 +85,14 @@ provider 中立 Instrument 标识（TICKER/EXCHANGE_SYMBOL/ISIN/CUSIP/SEDOL/FIGI
 | dataset_id | integer | NO | FK→datasets | 数据集 |
 | source_id | integer | NO | FK→data_sources | 数据源 |
 | priority_role | text | NO | CHECK | `PRIMARY / FALLBACK / ARCHIVE` |
+| **priority_rank** | integer | NO | UNIQUE(dataset_id, priority_rank) | 排序：数字越小优先级越高（PRIMARY=1，FALLBACK 依次 2、3…）（F4） |
 | is_active | boolean | NO | | 是否启用 |
 | notes | text | YES | | 备注（限额、切换条件） |
 | created_at / updated_at | datetime(UTC) | NO | | |
 
-UNIQUE：`(dataset_id, source_id)`
-示例：CN_EQUITY_DAILY→(TUSHARE,PRIMARY),(FMP,FALLBACK)；US_EQUITY_DAILY→(FMP,PRIMARY),(ALPHA_VANTAGE,FALLBACK)；US_FILINGS→(SEC,PRIMARY)。
+UNIQUE：`(dataset_id, source_id)`；`(dataset_id, priority_rank)`
+partial unique：`UNIQUE(dataset_id) WHERE role='PRIMARY' AND is_active=1`（每个 dataset 至多一个 active PRIMARY；历史/非活跃 PRIMARY 可共存，F4）
+示例：US_EQUITY_DAILY→(FMP,PRIMARY,1),(ALPHA_VANTAGE,FALLBACK,2),(YAHOO,FALLBACK,3)；CN_EQUITY_DAILY→(TUSHARE,PRIMARY,1),(FMP,FALLBACK,2)；US_FILINGS→(SEC,PRIMARY,1)。
 
 ### 1.8 ingest_runs（C）— v2 变更
 
@@ -101,7 +109,7 @@ UNIQUE：`(dataset_id, source_id, started_at)` 新增（防重复审计）。其
 | run_id | integer | YES | FK→ingest_runs | 产生它的 ingest（NULL=手工） |
 | artifact_type | text | NO | CHECK | `FILE / URL / API_PAYLOAD / DB_SNAPSHOT / ARCHIVE / OTHER` |
 | local_path_or_reference | text | YES | | 本地路径或 URL（不入 Git 的 data/raw/ 下） |
-| content_hash | text | NO | UNIQUE | SHA-256 hex |
+| content_hash | text | NO | INDEX + partial UNIQUE(run_id, content_hash) WHERE run_id IS NOT NULL | SHA-256 hex；内容身份/dedup detection；相同内容可在不同 run / source 重复登记（F5） |
 | retrieved_at | datetime(UTC) | NO | | 抓取/登记时刻 |
 | metadata | json | YES | | provider payload 元数据 |
 | created_at | datetime(UTC) | NO | | |
@@ -126,8 +134,9 @@ UNIQUE：`(instrument_id, trade_date, adjustment_type, source_id)`（不变）�
 |-------|------|
 | **event_uid** | **新增（B3）**：UUIDv4，UNIQUE |
 | entity_id / instrument_id | **移除（B10）**：不再有单一主体列；多主体关系在 event_entities / event_instruments |
+| source_id | **更名 `discovered_by_source_id`（F7，Option B）**：第一次创建 normalized event 的 source（detection provenance）；非 primary evidence、非 canonical truth；事件真实来源由 event_evidence 表达 |
 
-其余（fingerprint 去重、event_type/time/timezone/title/summary/source/status）与 v1 一致。
+其余（fingerprint 去重、event_type/time/timezone/title/summary/status）与 v1 一致。
 
 ### 1.13 event_entities（C）— **新增（B10）**
 
@@ -158,10 +167,14 @@ UNIQUE：`(event_id, instrument_id, role)`；索引 `(instrument_id)`
 | source_reference | text | YES | | URL / filing ref / 文件路径 |
 | published_at | datetime(UTC) | YES | | 证据发布时间 |
 | detected_at | datetime(UTC) | NO | | 系统发现时刻 |
-| content_hash | text | NO | UNIQUE(event_id,content_hash) | SHA-256（同事件同内容去重） |
+| content_hash | text | NO | INDEX | SHA-256（内容身份/dedup detection；不同 source 相同内容可共存，F6） |
 | is_primary | boolean | NO | partial UNIQUE(event_id) WHERE is_primary=1 | 主证据标记（每事件至多一条） |
 | metadata | json | YES | | 原始元数据 |
 | created_at | datetime(UTC) | NO | | |
+
+UNIQUE：`(evidence_uid)`；`(event_id, source_id, source_reference)`（source-level evidence identity，F6）；partial `UNIQUE(event_id) WHERE is_primary=1`
+INDEX：`(content_hash)`（F6：判断多个 evidence 是否内容相同）
+source_reference 可 NULL：SQLite UNIQUE 中 NULL 互不冲突——若需同一 (event_id, source_id) 多条 NULL ref 证据，R1B 可加 `evidence_key`（deterministic normalized key），本轮不过度设计。
 
 Mutability：append-only。
 
@@ -170,8 +183,10 @@ Mutability：append-only。
 | field | 变更 |
 |-------|------|
 | thesis_impact / thesis 相关字段 | **移除**（v1 曾有 thesis_impact 映射）——generic 分析不得含 thesis/portfolio 内容（B7） |
+| **analysis_uid** | **新增（F8B）**：UUIDv4，TEXT UNIQUE NOT NULL；跨库稳定身份，供 private.alerts.generic_analysis_uid 引用 |
 
-保留：importance_score、summary、bullish_points、bearish_points、recommended_attention、model_provider/model_id/prompt_version/analysis_version、raw_output。UNIQUE 不变。
+保留：importance_score、summary、bullish_points、bearish_points、recommended_attention、model_provider/model_id/prompt_version/analysis_version、raw_output。
+业务 UNIQUE 不变：`(event_id, model_provider, model_id, prompt_version, analysis_version)`（防重复；analysis_uid 负责稳定跨库 identity，两角色不混淆，F8B）。
 
 ### 1.17 schema_migrations（C, infra）— 不变（v1）
 
@@ -187,7 +202,7 @@ Mutability：append-only。
 | **account_uid** | text | NO | **UNIQUE** | UUIDv4 稳定身份 |
 | account_name | text | NO | UNIQUE | 账户名 |
 | broker | text | YES | | 券商（IBKR/券商A…） |
-| account_type | text | NO | CHECK | `CASH / MARGIN / IBKR / BROKER / OTHER` |
+| account_type | text | NO | CHECK | `CASH / MARGIN / RETIREMENT / PAPER / OTHER`（F8A：不含 broker 名；券商由 broker 字段表达） |
 | base_currency | text | NO | | ISO 4217（USD/HKD/CNY） |
 | status | text | NO | CHECK | `ACTIVE / CLOSED` |
 | created_at / updated_at | datetime(UTC) | NO | | |
@@ -267,6 +282,7 @@ Mutability：append-only。
 | alert_key | text | NO | UNIQUE | 业务去重键 |
 | event_uid | text | YES | 跨库引用 | → core.events.event_uid（可选） |
 | instrument_uid | text | YES | 跨库引用 | → core.instruments.instrument_uid（可选） |
+| **generic_analysis_uid** | text | YES | 跨库引用 | → core.event_analysis.analysis_uid（F8B：哪次 generic analysis 触发；按 alert 类型选择，非必需） |
 | thesis_analysis_id | integer | YES | FK→event_thesis_analysis | 同库（可选） |
 | alert_type | text | NO | | R6 定义（THESIS_IMPACT/EVENT/PRICE/…） |
 | channel | text | YES | | telegram/email/… |
@@ -275,7 +291,7 @@ Mutability：append-only。
 | delivered_at | datetime(UTC) | YES | | |
 | created_at / updated_at | datetime(UTC) | NO | | |
 
-说明：PRIVATE / RUNTIME USER STATE，属 private.db（B8）；不属 PUBLIC core。
+说明：PRIVATE / RUNTIME USER STATE，属 private.db（B8）；不属 PUBLIC core。alert 可依据类型关联 event_uid / generic_analysis_uid / thesis_analysis_id 之一或多个（F8B）。
 
 ---
 
@@ -291,19 +307,20 @@ Mutability：append-only。
 |----|---------|------|
 | entities | 改 | +entity_uid；canonical_name 去 UNIQUE |
 | entity_identifiers | 新 | B1 |
-| instruments | 改 | +instrument_uid |
-| data_sources | 改 | priority 弃用 canonical（B9） |
+| instruments | 改 | +instrument_uid；去 symbol 复合 UNIQUE（F1） |
+| data_sources | 改 | priority 删除（F3） |
 | ingest_runs | 改 | +UNIQUE(dataset_id, source_id, started_at) |
-| dataset_sources | 新 | B9 |
-| raw_artifacts | 升 | Deferred→Core（B12） |
+| datasets | 改 | primary_source_id 移除（F2） |
+| dataset_sources | 新 | B9；+priority_rank 排序（F4） |
+| raw_artifacts | 升 | Deferred→Core（B12）；hash 语义修正（F5） |
 | market_prices_daily | 改 | +ingest_run_id / raw_artifact_id（B13） |
-| events | 改 | +event_uid；移除单一 entity_id/instrument_id（B10） |
+| events | 改 | +event_uid；移除单一 entity_id/instrument_id（B10）；source_id→discovered_by_source_id（F7） |
 | event_entities / event_instruments | 新 | B10 |
-| event_evidence | 新 | B11 |
-| event_analysis | 改 | 移除 thesis 相关字段（B7） |
-| accounts | 升 | Deferred→Core（B5） |
+| event_evidence | 新 | B11；唯一性→source-level（F6） |
+| event_analysis | 改 | 移除 thesis 相关字段（B7）；+analysis_uid（F8B） |
+| accounts | 升 | Deferred→Core（B5）；account_type 规范化（F8A） |
 | positions | 改 | account_id NOT NULL FK + instrument_uid（B6） |
 | watchlist_items | 改 | entity_uid/instrument_uid XOR + 双 partial unique（B4） |
 | investment_theses | 改 | entity_id → entity_uid |
 | event_thesis_analysis | 新 | B7 |
-| alerts | 移 | core → private（B8） |
+| alerts | 移 | core → private（B8）；+generic_analysis_uid（F8B） |

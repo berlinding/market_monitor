@@ -1,25 +1,25 @@
 # daily_bars Migration Plan v2 — Freeze Candidate
 
-> 现有 `daily_bars`（Tushare A股日线，~5,540 条）→ canonical schema 迁移方案
+> 现有 `daily_bars`（Tushare A股日线）→ canonical schema 迁移方案
 > 日期：2026-08-22 ｜ **Status: FREEZE CANDIDATE — NOT YET APPROVED**
 > 基于 `daily_bars_migration_plan_v1.md` 修订；v1 保留不覆盖。
 > **本轮不执行任何迁移**（不建 core.db/private.db，不改 market.db，不动 fetch_daily.py）。
 
 ---
 
-## 0. 现状（2026-08-22 复核）
+## 0. 现状（2026-08-22 只读复核）
 
 `data/market.db`（legacy）：
 
 ```
 daily_bars(ts_code, trade_date, open, high, low, close, pre_close, change, pct_chg, vol, amount)
-  PK(ts_code, trade_date)   -- 5,540 行
+  PK(ts_code, trade_date)   -- 16,620 行 = 3 个交易日（08-14: 5,540 / 08-17: 5,539 / 08-20: 5,541）；distinct ts_code = 5,546
 fetch_log(trade_date, fetched_at, rows, note)
 ```
 
-- **文件未被修改**（sha256 记录于 R1A 本轮核对；git 忽略 `*.db`）。
+- **文件未被修改**（sha256 = `93562960aa...d599004`，与 R1A.1 核对一致；git 忽略 `*.db`）。
 - 数据来源：Tushare `daily` 接口（RAW 不复权）。
-- 最近抓取：2026-08-16。
+- 最近抓取（fetch_log）：2026-08-20 21:55（5541 行）。早期文档“5,540 条”为 2026-08-14 单日抓取口径，非当前总量。
 
 目标（R1B 实施）：
 
@@ -108,7 +108,7 @@ FROM daily_bars d JOIN _mig_ts_code_map m ON m.ts_code = d.ts_code;
 
 | # | 检查项 | 通过标准 |
 |---|--------|---------|
-| V1 | 行数 | `COUNT(market_prices_daily WHERE source=TUSHARE) == COUNT(daily_bars)` == 5,540 |
+| V1 | 行数 | `COUNT(market_prices_daily WHERE source=TUSHARE) == COUNT(daily_bars)` == 16,620（2026-08-22 复核基准，3 个交易日） |
 | V2 | 键无损 | 逐 `(ts_code, trade_date)` 对比：无缺失、无多余 |
 | V3 | 数值无损 | open/high/low/close/vol/amount 按 ts_code 分组 SUM 与 COUNT(非NULL) 一致 |
 | V4 | 逐行抽查 | 随机 100 行全字段逐值相等 |
@@ -156,7 +156,7 @@ FROM daily_bars d JOIN _mig_ts_code_map m ON m.ts_code = d.ts_code;
 ## 6. Not Done（本轮严格不执行）
 
 - ❌ 未创建 core.db / private.db
-- ❌ 未迁移 5,540 条 daily_bars
+- ❌ 未迁移 daily_bars（当前 16,620 行 / 3 个交易日，全部保留）
 - ❌ 未修改 `data/market.db`（legacy 原样）
 - ❌ 未修改 `fetch_daily.py` 生产路径
 - ❌ 未下载真实 stock_basic
