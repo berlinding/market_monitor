@@ -1,7 +1,10 @@
 # R1A.1 Schema Review v2
 
 > R1A.1 设计自审 —— v2 Freeze Candidate 审查
-> 日期：2026-08-22 ｜ **Status: FREEZE CANDIDATE — NOT YET APPROVED**
+> 日期：2026-08-22 ｜ **Status: FROZEN — Berlin Approved（2026-08-22）**
+>
+> R1A v2 was approved and frozen by Berlin on 2026-08-22.
+> Subsequent schema changes require a new design decision and explicit schema revision.
 > 方法：按任务指定的 21 项风险逐一排查；每项给 Finding / Severity / Affected Tables / Problem / Resolution / Residual Risk / Blocking?
 > 结论见文末汇总。
 

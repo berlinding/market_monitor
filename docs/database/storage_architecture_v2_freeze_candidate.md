@@ -1,7 +1,10 @@
 # Storage Architecture v2 — Freeze Candidate
 
 > Market Monitor 存储架构 —— R1A.1 修订交付物
-> 日期：2026-08-22 ｜ **Status: FREEZE CANDIDATE — NOT YET APPROVED**
+> 日期：2026-08-22 ｜ **Status: FROZEN — Berlin Approved（2026-08-22）**
+>
+> R1A v2 was approved and frozen by Berlin on 2026-08-22.
+> Subsequent schema changes require a new design decision and explicit schema revision.
 > 基于 `storage_architecture_v1.md` 修订；v1 保留不覆盖。本轮**不实施**任何建库/迁移。
 
 ---

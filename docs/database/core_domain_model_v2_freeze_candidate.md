@@ -1,8 +1,11 @@
 # Core Domain Model v2 — Freeze Candidate
 
 > Market Monitor 核心领域模型 —— R1A.1 修订交付物
-> 日期：2026-08-22 ｜ **Status: FREEZE CANDIDATE — NOT YET APPROVED**
-> 本文件为设计候选，**尚未冻结**。Berlin 审查通过后方可标记 Frozen，并授权 R1B。
+> 日期：2026-08-22 ｜ **Status: FROZEN — Berlin Approved（2026-08-22）**
+>
+> R1A v2 was approved and frozen by Berlin on 2026-08-22.
+> Subsequent schema changes require a new design decision and explicit schema revision.
+> 本文件已冻结（Berlin 2026-08-22 批准）。后续 schema 变更需新设计决策与明确修订。
 > 基于 `core_domain_model_v1.md` 修订；**v1 保留不覆盖**。
 > 配套：`database_schema_design_v2_freeze_candidate.md` / `data_dictionary_v2_freeze_candidate.md` / `storage_architecture_v2_freeze_candidate.md` / `daily_bars_migration_plan_v2_freeze_candidate.md` / `r1a1_schema_review_v2.md` / `database_design_decisions_v1.md`
 

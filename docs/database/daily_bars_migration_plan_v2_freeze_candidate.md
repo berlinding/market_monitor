@@ -1,7 +1,10 @@
 # daily_bars Migration Plan v2 — Freeze Candidate
 
 > 现有 `daily_bars`（Tushare A股日线）→ canonical schema 迁移方案
-> 日期：2026-08-22 ｜ **Status: FREEZE CANDIDATE — NOT YET APPROVED**
+> 日期：2026-08-22 ｜ **Status: FROZEN — Berlin Approved（2026-08-22）**
+>
+> R1A v2 was approved and frozen by Berlin on 2026-08-22.
+> Subsequent schema changes require a new design decision and explicit schema revision.
 > 基于 `daily_bars_migration_plan_v1.md` 修订；v1 保留不覆盖。
 > **本轮不执行任何迁移**（不建 core.db/private.db，不改 market.db，不动 fetch_daily.py）。
 

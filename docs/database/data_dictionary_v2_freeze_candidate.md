@@ -1,7 +1,10 @@
 # Data Dictionary v2 — Freeze Candidate
 
 > Market Monitor 字段级数据字典 —— R1A.1 修订交付物
-> 日期：2026-08-22 ｜ **Status: FREEZE CANDIDATE — NOT YET APPROVED**
+> 日期：2026-08-22 ｜ **Status: FROZEN — Berlin Approved（2026-08-22）**
+>
+> R1A v2 was approved and frozen by Berlin on 2026-08-22.
+> Subsequent schema changes require a new design decision and explicit schema revision.
 > 基于 `data_dictionary_v1.md` 修订；v1 保留不覆盖。只列 v2 变更/新增表；未列字段与 v1 一致。
 > tables 简称：`C`=core.db / `P`=private.db
 

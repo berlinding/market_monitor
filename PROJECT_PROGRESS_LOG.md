@@ -337,3 +337,69 @@ Berlin 在项目根新增 `API.txt`（含全部 API token，包括 GitHub token�
 ### Next
 
 - **Berlin final review and freeze approval**：审查 R1A v2 Freeze Candidate（Freeze Readiness: READY FOR BERLIN APPROVAL）；批准后标记 FROZEN 并授权 R1B — SQL DDL & Migration Specification（不自动开始）。
+
+---
+
+## 2026-08-22 — R1B SQL DDL & Migration Specification
+
+### Task
+
+Berlin 批准 **R1A v2 = FROZEN**（2026-08-22）并授权 R1B：将冻结设计转换为可审计的 SQLite DDL 与迁移规格。**只写不执行**（不建库、不迁移、不改 legacy、不动 pipeline）。
+
+### R1A Freeze Approval
+
+- 7 份 v2 文档状态更新为 **FROZEN — Berlin Approved（2026-08-22）**，并加注后续 schema 变更需新 decision + 明确修订；文件名保留 freeze_candidate（历史命名，不 rename）。
+- 顺手修正两处文档残留：schema design §4 摘要（data_sources.priority 表述 → dataset_sources 单真源）；event_entities/event_instruments mutability（→ CONTROLLED MUTABLE RELATION TABLE，DELETE+INSERT 纠错，无 status/valid_to）。
+
+### Files Created
+
+- `docs/database/sql/core_schema_v1.sql` — core.db 17 表完整 DDL（review snapshot）
+- `docs/database/sql/private_schema_v1.sql` — private.db 7 业务表 + schema_migrations（review snapshot）
+- `docs/database/sql/migrations/core/C0001_initial_core_schema.sql` — core canonical executable migration
+- `docs/database/sql/migrations/private/P0001_initial_private_schema.sql` — private canonical executable migration
+- `docs/database/migration_runner_spec_v1.md` — stdlib runner 规格（顺序/事务/checksum/dry-run/backup gate/回滚/core-private 分历史）
+- `docs/database/legacy_daily_bars_migration_spec_v1.md` — M0–M9 分阶段迁移规格 + V1–V12 验证 + abort 条件
+- `docs/database/r1b_test_plan_v1.md` — T1–T6 测试计划（含 15 个约束案例 + 隐私测试）
+- `docs/database/r1b_ddl_review_v1.md` — 18 项自审，Blocking findings = 0
+
+### DDL Summary
+
+- core.db 17 表：entities/entity_identifiers/instruments/instrument_identifiers/data_sources/datasets/dataset_sources/ingest_runs/raw_artifacts/data_gaps/market_prices_daily/events/event_entities/event_instruments/event_evidence/event_analysis/schema_migrations
+- private.db 8 表：accounts/positions/watchlists/watchlist_items/investment_theses/event_thesis_analysis/alerts/schema_migrations（独立 P0001... 历史）
+- 关键实现决策：UID=application 生成 UUIDv4 + CHECK(length=36)；timestamp/JSON 校验在应用层；跨库引用无伪 FK + 4 个 validator；event_evidence 用 evidence_key（DB-D032 方案 B）；market price CONTROLLED UPSERT（DB-D031）；partial unique 全部实现（current identifier、单 active PRIMARY、run 内 artifact 去重、单 primary evidence、OPEN position、watchlist XOR 去重）。
+
+### Migration Specification
+
+- Runner：stdlib sqlite3，transaction 包裹，schema_migrations 记录，SHA-256 checksum（已执行文件被修改→报错），已执行不重复执行，core/private 分开运行（C0001.../P0001...），dry-run/plan，backup gate，failure rollback。
+- Legacy：M0 Preflight → M1 Backup+raw_artifact(SHA-256) → M2 Source/Dataset bootstrap → M3 Entity/Instrument（stock_basic 快照作 input artifact；uid 随机 UUIDv4 非 hash(ts_code)）→ M4 Identifier mapping → M5 Ingest run backfill（fetch_log 3 行一一对应）→ M6 Bar copy（vol→LOTS、amount→THOUSAND_CNY、RAW、CNY；pre_close/change/pct_chg 不入 canonical）→ M7 V1–V12 → M8 dual-write（≥20 trading days 且 ≥30 calendar days 取较晚者）→ M9 retirement gate（6 条件 + Berlin 批准；market.db 删除须另行授权）。
+
+### Test Plan
+
+- T1 schema / T2 15 个约束案例 / T3 runner（顺序/幂等/checksum/回滚/dry-run/分库/backup gate）/ T4 cross-db uid / T5 legacy M0–M9 / T6 privacy（core 导出无持仓/thesis/alert；private 无 token/password）。
+
+### Review Findings
+
+- r1b_ddl_review_v1.md：HIGH 8 / MEDIUM 10 全部 PASS；**Blocking findings = 0**；残余：跨库一致性靠应用层（R2 自动化）、迁移纪律靠 R1C 实现、JSON 校验在应用层。
+
+### Legacy Data Fact
+
+- `data/market.db`：daily_bars = **16,620 行**（2026-08-14: 5,540 / 08-17: 5,539 / 08-20: 5,541），distinct ts_code = 5,546，fetch_log = 3，最近抓取 2026-08-20 21:55；sha256 = `93562960aa...d599004`（与 R1A.1 一致）
+- **legacy unchanged = YES**（只读复核，未执行任何写入）
+
+### Decision Register
+
+- 追加 DB-D025（R1A v2 frozen）、DB-D026（relation mutability）、DB-D027（application timestamps）、DB-D028（JSON app 校验）、DB-D029（migration=canonical source）、DB-D030（core/private 分历史）、DB-D031（controlled upsert）、DB-D032（evidence_key 方案 B）、DB-D033（dual-write retirement gate）
+
+### Not Done
+
+- ❌ 未创建 core.db / private.db；未执行任何 SQL
+- ❌ 未迁移 16,620 行 daily_bars；未修改 data/market.db
+- ❌ 未下载 stock_basic；未接任何 provider
+- ❌ 未修改 fetch_daily.py 生产行为；未启用 dual-write
+- ❌ 未安装 SQLAlchemy/Alembic/DuckDB/Parquet 依赖
+- ❌ 未继续开发 dashboard；无自动交易
+- ❌ 未 force push
+
+### Next
+
+- **Berlin review of R1B SQL DDL and Migration Specification**；批准后 R1C — Database Implementation & Legacy Migration Dry Run（不自动开始）。

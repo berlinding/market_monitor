@@ -1,7 +1,10 @@
 # Database Design Decisions v1
 
 > Market Monitor 数据库设计决策登记表（Decision Register）
-> 日期：2026-08-22 ｜ **Status: FREEZE CANDIDATE — NOT YET APPROVED**
+> 日期：2026-08-22 ｜ **Status: FROZEN — Berlin Approved（2026-08-22）**
+>
+> R1A v2 was approved and frozen by Berlin on 2026-08-22.
+> Subsequent schema changes require a new design decision and explicit schema revision.
 > 记录 R1A + R1A.1 的数据库设计决策；后续决策追加登记，历史不改写。
 
 ---
@@ -189,4 +192,85 @@
 - **Rationale**: future private.alerts 需精确跨库引用“哪一次 generic analysis 触发了 alert”；analysis_uid 负责稳定跨库 identity，业务 unique 负责防重复，两角色不混淆。
 - **Consequences**: alert 可按类型关联 event_uid / generic_analysis_uid / thesis_analysis_id 之一或多个；非所有 alert 都需要 generic_analysis_uid。
 - **Files**: `database_schema_design_v2_freeze_candidate.md` §1.16/§2.7；`data_dictionary_v2_freeze_candidate.md` §1.16/§2.7；`storage_architecture_v2_freeze_candidate.md` §2.2
+- **Date**: 2026-08-22
+
+## DB-D025 — R1A v2 frozen（R1B 启动批准）
+
+- **Status**: Approved & Frozen（2026-08-22, Berlin）
+- **Decision**: R1A v2 Freeze Candidate 正式冻结；7 份文档状态更新为 FROZEN — Berlin Approved（Freeze Date 2026-08-22）；文件名保留 freeze_candidate（历史命名，不 rename）。后续 schema 变更需新 design decision + 明确 schema revision。
+- **Rationale**: Berlin 完成最终审查，批准进入 R1B。
+- **Consequences**: 冻结后不静默改设计；发现实施冲突 → 标记 R1B Implementation Conflict + 最小 amendment，不自行突破 Freeze。
+- **Files**: 7 份 v2 文档头部
+- **Date**: 2026-08-22
+
+## DB-D026 — Relation correction mutability（R1B）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: `event_entities` / `event_instruments` 定为 **CONTROLLED MUTABLE RELATION TABLE**：纠错方式 = DELETE incorrect relation + INSERT corrected relation（或事务内 replace）；**不新增 status / valid_to 字段**。
+- **Rationale**: R1 不需要为关系纠错引入 temporal relation history；表结构无 status/valid_to 字段，与文档措辞（append-only + status/valid_to）的残留矛盾消除。
+- **Consequences**: 关系纠错走应用层 delete+insert；若未来需要 relation history，再升级 schema（新 decision）。
+- **Files**: `database_schema_design_v2_freeze_candidate.md` §1.13/§1.14
+- **Date**: 2026-08-22
+
+## DB-D027 — Application-generated UTC timestamps（R1B）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: 所有 canonical timestamps（created_at/updated_at/detected_at/retrieved_at/ingested_at/applied_at 等）由 **application layer 显式写 UTC ISO-8601**（如 `2026-08-22T02:30:00Z`）；SQLite DDL 中**不使用** `CURRENT_TIMESTAMP` DEFAULT。
+- **Rationale**: 避免 `2026-08-22 02:30:00`（SQLite）与 `2026-08-22T02:30:00Z`（Python）两套格式混用；统一格式可审计。
+- **Consequences**: DDL 无 timestamp DEFAULT；应用层负责生成；migration runner 的 applied_at 亦由 runner 写入。
+- **Files**: `core_schema_v1.sql`；`migration_runner_spec_v1.md` §4.1
+- **Date**: 2026-08-22
+
+## DB-D028 — JSON validation at application layer（R1B）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: JSON 字段（metadata/raw_output/key_metrics/key_catalysts/key_risks/bullish_points/bearish_points）以 TEXT 存储；**不硬依赖 SQLite JSON1 `json_valid()`** 做 schema 级 CHECK；JSON 合法性校验在 application layer。
+- **Rationale**: 不同 SQLite build 的 JSON1 可用性不一致；不强依赖 extension 保证 schema 可移植。
+- **Consequences**: schema 无 JSON CHECK；写入前应用层 json.loads 验证。
+- **Files**: `core_schema_v1.sql`；`private_schema_v1.sql`；`r1b_ddl_review_v1.md` B8
+- **Date**: 2026-08-22
+
+## DB-D029 — Migration files as canonical executable schema source（R1B）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: **Migration files are canonical executable source**（`docs/database/sql/migrations/core/C0001_*.sql` / `private/P0001_*.sql`）；consolidated schema（`core_schema_v1.sql` / `private_schema_v1.sql`）为 **review snapshot**，由 migration 生成/核对，不反向编辑。
+- **Rationale**: 避免 duplicate maintenance 导致两处漂移；执行以 migration 为准。
+- **Consequences**: 改 schema = 写新 migration；snapshot 需再生成/核对。
+- **Files**: `migration_runner_spec_v1.md` §2；两个 SQL 文件头注
+- **Date**: 2026-08-22
+
+## DB-D030 — Separate core/private migration histories（R1B）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: core.db 与 private.db 各自独立 `schema_migrations` 与独立 migration 序号（core=C0001...；private=P0001...），runner 分开运行。
+- **Rationale**: 两库生命周期独立（private 可能加密/独立备份）；不共用一个隐式 migration state。
+- **Consequences**: runner 支持 `--db core` / `--db private` / `--db all`；两库可不同步处于不同 version。
+- **Files**: `migration_runner_spec_v1.md` §2/§4.7；两 schema 的 schema_migrations
+- **Date**: 2026-08-22
+
+## DB-D031 — Controlled market price upsert（R1B）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: R1 采用 **CONTROLLED UPSERT**：更新 canonical bar 时保留稳定 `bar_id`，更新 OHLCV/turnover、`ingest_run_id`、`raw_artifact_id`、`ingested_at`。**不允许不同 source 相互覆盖**——不同 source 保留独立 row（UNIQUE(instrument_id, trade_date, adjustment_type, source_id) 已含 source_id）。
+- **Rationale**: raw_artifacts 已保存原始输入，无需现在增加 price_revisions 表；upsert 覆盖条件 = same source + same instrument + same date + same adjustment_type 且新 run 通过 validation。
+- **Consequences**: 同一 (instrument, date, adjustment, source) 仅一行；跨 source 并存；未来如需严格版本化再加 price_revisions（新 decision）。
+- **Files**: `core_schema_v1.sql` §11；`legacy_daily_bars_migration_spec_v1.md` M6
+- **Date**: 2026-08-22
+
+## DB-D032 — Event evidence implementation key（R1B，方案 B）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: `event_evidence` 增加 `evidence_key TEXT NOT NULL`，业务唯一 `UNIQUE(event_id, evidence_key)`（替代 R1A.2 F6 的 `UNIQUE(event_id, source_id, source_reference)` 因 source_reference 可 NULL 的歧义）；`source_reference` 保持可 NULL。
+- **Rationale**: evidence 可来自 API payload / 手工 / 本地文件，不一定有天然 URL；evidence_key 提供确定性业务去重键。
+- **Consequences**: evidence_key 生成规则 = provider native ID → normalized URL/ref → artifact_uid → content-derived fallback（**不用随机 UUID 做业务 dedup key**）；同内容不同 source 仍可共存（content_hash 索引判断内容相同性）。
+- **Files**: `core_schema_v1.sql` §15；`r1b_ddl_review_v1.md` B18
+- **Date**: 2026-08-22
+
+## DB-D033 — Legacy dual-write retirement gate（R1B）
+
+- **Status**: Adopted（2026-08-22，policy）
+- **Decision**: Legacy daily_bars 双写观察期 = **至少 20 个交易日，且不少于 30 个 calendar days，取较晚者**；停止 legacy write 需满足 6 条件（validation 100% pass / dual-write pass / no unresolved gaps / raw backup verified / rollback tested / Berlin explicit approval）。
+- **Rationale**: 日历天数不足以覆盖节假日聚集；交易日数保证跨市场结构验证。
+- **Consequences**: 即使停止，legacy raw snapshot 永久保留；原 market.db 删除须另行授权。
+- **Files**: `legacy_daily_bars_migration_spec_v1.md` §11/§12
 - **Date**: 2026-08-22

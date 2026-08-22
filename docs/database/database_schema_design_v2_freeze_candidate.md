@@ -1,8 +1,11 @@
 # Database Schema Design v2 — Freeze Candidate
 
 > Market Monitor 数据库逻辑结构设计 —— R1A.1 修订交付物
-> 日期：2026-08-22 ｜ **Status: FREEZE CANDIDATE — NOT YET APPROVED**
-> 本文件为设计候选，**尚未冻结**。基于 `database_schema_design_v1.md` 修订；v1 保留不覆盖。
+> 日期：2026-08-22 ｜ **Status: FROZEN — Berlin Approved（2026-08-22）**
+>
+> R1A v2 was approved and frozen by Berlin on 2026-08-22.
+> Subsequent schema changes require a new design decision and explicit schema revision.
+> 本文件已冻结（Berlin 2026-08-22 批准）。
 > 落实 B1–B14；字段级字典见 `data_dictionary_v2_freeze_candidate.md`；物理分库见 `storage_architecture_v2_freeze_candidate.md`。
 
 ---
@@ -138,7 +141,7 @@
 - FK：`event_id` → events；`entity_id` → entities
 - UNIQUE：`(event_id, entity_id, role)`
 - CHECK：`role IN ('PRIMARY','ACQUIRER','TARGET','ISSUER','AFFECTED','RELATED')`
-- Mutability：append-only（纠错用 status/valid_to 或新行）
+- Mutability：**CONTROLLED MUTABLE RELATION TABLE**（纠错方式：DELETE incorrect relation + INSERT corrected relation，或事务内 replace；不设 status/valid_to 字段，见 DB-D026）
 - 索引：`(entity_id, event_date 经 join)` → 索引 `(entity_id)`
 
 ### 1.14 `event_instruments` — 事件相关工具（多 Instrument）（PUBLIC，B10 新增）
@@ -147,7 +150,7 @@
 - FK：`event_id` → events；`instrument_id` → instruments
 - UNIQUE：`(event_id, instrument_id, role)`
 - CHECK：`role IN ('PRIMARY','ACQUIRER','TARGET','ISSUER','AFFECTED','RELATED')`
-- Mutability：append-only
+- Mutability：**CONTROLLED MUTABLE RELATION TABLE**（同 event_entities：DELETE + INSERT 纠错，不设 status/valid_to，见 DB-D026）
 - 索引：`(instrument_id)`
 
 ### 1.15 `event_evidence` — 多源事件证据（PUBLIC，B11 新增，F6 修正）
@@ -266,6 +269,6 @@
 2. **Entity/Instrument 标识分属**：entity_identifiers vs instrument_identifiers（B1）。
 3. **事件多主体、多证据**：event_entities / event_instruments / event_evidence（B10/B11）。
 4. **分析三层分离**：events（事实）→ event_analysis（generic，core）→ event_thesis_analysis（private，thesis 级）+ alerts（private，运行时状态）（B7/B8）。
-5. **数据集源优先级**：dataset_sources（B9）；data_sources.priority 无 canonical 含义。
+5. **数据集源优先级（单真源）**：data source precedence is defined exclusively by `dataset_sources`(role + priority_rank)；`data_sources` 不含 priority 字段（B9/F3/F4）。
 6. **原始证据 Core**：raw_artifacts 提升；行情带 ingest_run_id/raw_artifact_id 血缘（B12/B13）。
 7. **legacy 溯源**：market.db 备份 + raw_artifact + SHA-256；normalized completeness + raw provenance completeness（B14）。

@@ -6,7 +6,6 @@ Current Stage: R1 — Core Data Model
 System Status: Development
 Production Monitoring: NOT ENABLED
 Automated Trading: DISABLED
-
 ## Roadmap
 
 R0 — Project Governance & Architecture
@@ -27,20 +26,18 @@ R9 — Quant Layer
 - Credential Security（2026-08-17，API.txt 保密规则）
 - R1A.1 — Recovery, Repository Reconciliation & Schema Freeze Candidate（2026-08-22）
 - R1A.2 — Final Freeze Corrections（2026-08-22，F1–F8 修正）
+- **R1A v2 — FROZEN**（2026-08-22，Berlin 批准）
+- **R1B — SQL DDL & Migration Specification**（2026-08-22，只写不执行）
 
 ## Current
 
-- **R1A v2 Freeze Candidate —— Freeze Readiness: READY FOR BERLIN APPROVAL**
-- docs/database/ 下 7 份文档：
-  - core_domain_model_v2_freeze_candidate.md
-  - database_schema_design_v2_freeze_candidate.md
-  - data_dictionary_v2_freeze_candidate.md
-  - storage_architecture_v2_freeze_candidate.md
-  - daily_bars_migration_plan_v2_freeze_candidate.md
-  - r1a1_schema_review_v2.md（R1A.2 Addendum：Blocking findings = 0）
-  - database_design_decisions_v1.md（DB-D001–D024）
-- 无进行中的实施工作；未创建任何新数据库，未迁移数据
-- **注意：仍是 FREEZE CANDIDATE，不是 FROZEN。**
+- **R1B artifacts awaiting Berlin review**
+- SQL DDL：`docs/database/sql/core_schema_v1.sql`（17 表）+ `private_schema_v1.sql`（7 业务表 + schema_migrations）
+- Canonical migrations：`docs/database/sql/migrations/core/C0001_initial_core_schema.sql` + `private/P0001_initial_private_schema.sql`
+- 规格文档：`migration_runner_spec_v1.md` / `legacy_daily_bars_migration_spec_v1.md` / `r1b_test_plan_v1.md` / `r1b_ddl_review_v1.md`
+- Decision Register：DB-D001–D033（DB-D025 R1A v2 frozen … DB-D033 retirement gate）
+- 无进行中的实施工作；未创建任何新数据库，未迁移数据，未执行任何 SQL
+- **注意：R1A v2 已 FROZEN（2026-08-22）。R1B 产物待审查。R1C 未开始。**
 
 ## Existing Prototype
 
@@ -52,13 +49,14 @@ R9 — Quant Layer
 
 ## Next
 
-- **Berlin final review and freeze approval**：审查 R1A v2 Freeze Candidate（Freeze Readiness: READY FOR BERLIN APPROVAL）。若批准：标记 R1A v2 FROZEN，然后授权 R1B — SQL DDL & Migration Specification。
-- 不自动开始 R1B。
+- **Berlin reviews R1B SQL DDL and Migration Specification**；批准后进入 R1C — Database Implementation & Legacy Migration Dry Run。
+- 不自动开始 R1C。
 
 ## Not Authorized
 
-- R1B（SQL DDL & Migration）
-- 任何数据库实施 / 数据迁移
+- R1C（Database Implementation & Legacy Migration Dry Run）
+- 任何数据库创建 / SQL 执行 / 数据迁移
+- 修改 fetch_daily.py 生产行为 / 启用 dual-write
 - Dashboard 继续开发
 
 ## Active Components
@@ -94,17 +92,18 @@ R9 — Quant Layer
 3. market_prices_daily upsert 策略：受控 upsert vs 严格版本化（raw_artifacts 已 Core，可支撑 price_revisions）
 4. event_evidence 同源多版本证据是否需要 version 列（R1B 决策点）
 
-## Key Decisions（2026-08-22 R1A.2 增量，详见 DB-D017–D024）
+## Key Decisions（2026-08-22 R1B 增量，详见 DB-D025–D033）
 
-- Instrument symbol is not identity：去 UNIQUE，ticker 历史归 instrument_identifiers（F1 / DB-D017）
-- Dataset source 单真源：datasets.primary_source_id 删除（F2 / DB-D018）
-- dataset_sources 增加 priority_rank 顺序（F4 / DB-D019）
-- raw_artifacts hash 非唯一，run 内去重（F5 / DB-D020）
-- event_evidence source-level 唯一性（F6 / DB-D021）
-- events.source_id → discovered_by_source_id（F7 / DB-D022）
-- account_type 规范化（F8A / DB-D023）
-- event_analysis.analysis_uid + alerts.generic_analysis_uid（F8B / DB-D024）
+- R1A v2 FROZEN（Berlin 2026-08-22 批准）（DB-D025）
+- event_entities/event_instruments = CONTROLLED MUTABLE（DELETE+INSERT，无 status/valid_to）（DB-D026）
+- 所有 timestamp 由 application 层写 UTC ISO-8601，不用 CURRENT_TIMESTAMP（DB-D027）
+- JSON 校验在 application 层，不硬依赖 JSON1（DB-D028）
+- Migration files = canonical executable source；consolidated schema = review snapshot（DB-D029）
+- core/private 独立 migration history（C0001… / P0001…）（DB-D030）
+- Market price CONTROLLED UPSERT，不同 source 不互覆（DB-D031）
+- event_evidence 用 evidence_key（方案 B）业务唯一（DB-D032）
+- Legacy dual-write：≥20 trading days 且 ≥30 calendar days 取较晚者；退休门 6 条件 + Berlin 批准（DB-D033）
 
 ## Next Authorized Step
 
-- Berlin 最终审查 R1A v2 Freeze Candidate → 批准后标记 FROZEN → 授权 R1B
+- Berlin 审查 R1B SQL DDL & Migration Specification → 批准后 R1C — Database Implementation & Legacy Migration Dry Run
