@@ -450,3 +450,53 @@ Berlin 批准 **R1A v2 = FROZEN**（2026-08-22）并授权 R1B：将冻结设计
 ### Next
 
 - **Berlin final R1B/R1B.1 review**；批准后 R1C — Database Implementation & Legacy Migration Dry Run（第一阶段：temp DB → C0001/P0001 → constraint tests → runner tests → legacy dry run；不直接迁移生产数据）。
+
+---
+
+## 2026-08-22 — R1C Phase 0/1 Pre-Implementation Reconciliation & Temp-DB Validation
+
+### Task
+
+Berlin 批准 R1B/R1B.1，授权 R1C Phase 0（Pre-Implementation Reconciliation）+ Phase 1（Temp-DB Implementation & Automated Validation）。**第一次真实执行 SQL 只允许在 disposable temp database。**
+
+### Phase 0（三个 mandatory reconciliation + 小清理）
+
+- **P0-1 Dynamic baseline**：legacy spec §0 改为 Documented Baseline（16,620 仅历史参考）；§2 M0 重写为动态 migration-time baseline + Migration Baseline Manifest（captured_at/source_path/source_sha256/file_size/mtime/row_count/trade_date_distribution/distinct_ts_code/fetch_log_count/latest_fetch_time_raw/ts_code_suffixes）。删除 `COUNT(*)==16,620` 式硬编码 abort。
+- **P0-2 M1/M2 排序**：重排 M0 Live Preflight → M1 Create & Validate Frozen Snapshot → M2 Bootstrap Source/Dataset → **M2B Register Frozen Snapshot as raw_artifact** → M3→M7；消除 raw_artifact 登记对 source/dataset 的循环依赖。
+- **P0-3 Frozen snapshot = 唯一 migration source**：live market.db 只用于 M0/M1；M1 validation PASS 后 M2B–M7 只读 frozen snapshot（M6 SQL 用 `ATTACH <snapshot> AS legacy`）；live 迁移期间新增数据不影响 historical migration。
+- 小清理：core_schema_v1.sql event_evidence 重复 evidence_key 注释删除（不改变 DDL）。
+
+### Implementation（stdlib only）
+
+- `scripts/migrate.py`：migration runner（--db core/private/all、--plan、--status、--db-path、--migrations-dir、--no-backup-gate）。DB-D034 事务契约（BEGIN IMMEDIATE 进 executescript + record 同事务 parameterized INSERT + 应用层 commit/rollback）；SHA-256 checksum（MigrationChecksumError）；文件预检（C/P+4位序号+snake 命名、连续性、SQL-token-aware 去注释检测文件内 BEGIN/COMMIT/ROLLBACK）；plan/status 只读不建库；backup gate；**生产路径保护**（PRODUCTION_WRITES_ENABLED=False，data/runtime/core.db 与 data/private/private.db 拒绝写入）。
+- `scripts/db_validators.py`：ensure_entity/instrument/event/analysis_uid（UUID 格式校验 + core 存在性查询 + CrossDbReferenceError）。
+- `scripts/timestamp_utils.py`：utc_now_iso()（Z 格式）+ convert_legacy_naive_to_utc（zoneinfo，时区未知 → TimestampResolutionError）。
+- `scripts/legacy_migration_utils.py`：fixture 级 M0–M7 helpers（capture_baseline / create_frozen_snapshot / validate_snapshot / build_ts_code_mapping / backfill_runs / migrate_bars_from_snapshot / validate_migration）。
+- `scripts/__init__.py`：package marker（供测试 import）。
+
+### Tests（6 文件，真实执行于 temp DB）
+
+`tests/test_schema.py`（C0001/P0001 执行、17+8 表、FK check、索引、canonical vs snapshot schema 等价）｜`tests/test_migration_runner.py`（plan/status 无写、幂等、checksum、ATOMIC-01/02/03、预检、生产保护、backup gate、分库历史）｜`tests/test_constraints.py`（17+ 约束案例）｜`tests/test_cross_db_refs.py`（uid validators + 重建安全）｜`tests/test_legacy_migration_fixture.py`（T-FROZEN-SOURCE-01/T-BASELINE-01/T-BACKUP-01/T-MAPPING-01/T-TIMEZONE-01/02）｜`tests/test_privacy_boundaries.py`（core 无 private 数据、private 无 credential）。
+
+### Executed
+
+- temp C0001 → temp core.db：17 表全建，FK check 空 ✅
+- temp P0001 → temp private.db：7 业务表 + schema_migrations ✅
+- unittest 套件：**Ran 62 tests — OK（0 failed / 0 errors / 0 skipped）** ✅
+
+### Results / Safety
+
+- real core.db = **NOT CREATED**；real private.db = **NOT CREATED**
+- legacy market.db = **NOT MODIFIED**（sha256 `93562960aa...d599004` 不变；16,620 行 / 3 日 / 5,546 标的 / fetch_log 3 / suffix SH·SZ·BJ）
+- real daily_bars migration = **NOT EXECUTED**；stock_basic 未下载；无联网；无 dashboard 改动
+- 临时 DB 全部自动清理（find data -name "*.db" 仅剩 legacy market.db）
+- 时区证据：`/etc/timezone=Asia/Shanghai` + 系统 CST + git author 时间戳全部 +0800 → **CONFIRMED**（Phase 2 gate 满足）
+
+### Review
+
+- `docs/database/r1c_phase1_review_v1.md`：C1–C19 全 PASS；**Blocking findings remaining = 0**
+- Decision Register 追加 DB-D039–D044
+
+### Next
+
+- **Berlin review of R1C Phase 0/1**；批准后 R1C Phase 2 — Real DB Initialization / Real Legacy Migration Dry Run（不自动开始）。

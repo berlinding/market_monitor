@@ -324,3 +324,63 @@
 - **Consequences**: M1 重写（Type A/B、gate）、M7-V10、M9 gate 更新；测试 T-BACKUP-01。
 - **Affected Files**: `legacy_daily_bars_migration_spec_v1.md` §3/§9/§12
 - **Date**: 2026-08-22
+
+## DB-D039 — Dynamic migration-time baseline（R1C Phase 0，P0-1）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: legacy 迁移区分 **documented_baseline**（2026-08-22 快照：16,620 行 / 3 日 / 5,546 标的）与 **migration_time_baseline**（M0 执行时实测）。M0 产出 Migration Baseline Manifest（captured_at/source_path/source_sha256/file_size/mtime/row_count/trade_date_distribution/distinct_ts_code/fetch_log_count/latest_fetch_time_raw/ts_code_suffixes）；后续 M1–M7 全部以 manifest 为准。**禁止** `COUNT(*) == 16,620` 式永久硬编码 abort 条件；数据增长不是错误。
+- **Alternatives**: 把 16,620 写成固定 invariant（拒绝——未来 cron 新增交易日后迁移会假失败）。
+- **Rationale**: 迁移正确性 = 一致性（manifest 与数据一致），不是与历史快照相等。
+- **Consequences**: M0 重写；V1/V3 等校验引用 manifest；测试 T-BASELINE-01。
+- **Affected Files**: `legacy_daily_bars_migration_spec_v1.md` §0/§2；`scripts/legacy_migration_utils.py` capture_baseline
+- **Date**: 2026-08-22
+
+## DB-D040 — Frozen snapshot as migration source of truth（R1C Phase 0，P0-3）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: live `data/market.db` 只用于 M0 preflight + M1 创建 consistent logical backup；M1 validation PASS 后得到 `frozen_legacy_snapshot`，**M2B–M7 所有历史迁移读取只来自 frozen snapshot**（`migration_source_path` / `migration_source_hash` 固定）。禁止 M6 再从 live 读 daily_bars。live 在迁移期间的新增数据不影响本轮 historical migration（属后续 pipeline / dual-write）。
+- **Alternatives**: 从 live 直接读（拒绝——迁移中途 live 变化会破坏 raw_artifact↔canonical 血缘一致性）。
+- **Rationale**: 保证 raw_artifact → canonical data 血缘真实成立。
+- **Consequences**: M6 SQL 用 `ATTACH <frozen_snapshot> AS legacy` 只读；测试 T-FROZEN-SOURCE-01（mutate live 后迁移仍只含 snapshot 数据）。
+- **Affected Files**: `legacy_daily_bars_migration_spec_v1.md` §1/§3/§6/§8；`scripts/legacy_migration_utils.py`
+- **Date**: 2026-08-22
+
+## DB-D041 — Migration phase ordering / raw artifact registration（R1C Phase 0，P0-2）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: 迁移阶段重排为 M0（Live Preflight）→ M1（Create & Validate Frozen Snapshot）→ M2（Bootstrap Source/Dataset）→ **M2B（Register Frozen Snapshot as raw_artifact）** → M3（Entity/Instrument）→ M4（Identifier Mapping）→ M5（Ingest Run Backfill）→ M6（Bar Copy from frozen）→ M7（Validation）→ M8/M9。不变量：backup creation/validation 不依赖 core metadata；raw_artifact 登记在 source/dataset 存在后。
+- **Alternatives**: 原 M1 同时备份+登记 raw_artifact（拒绝——dataset/source 未建，循环依赖）。
+- **Rationale**: 消除 raw_artifact registration 对 M2 元数据的循环依赖。
+- **Consequences**: legacy spec §1 总览与 §3/§4/§4B 更新。
+- **Affected Files**: `legacy_daily_bars_migration_spec_v1.md` §1–§4B
+- **Date**: 2026-08-22
+
+## DB-D042 — Temp-only R1C Phase 1 execution boundary（R1C Phase 1）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: 第一次真实执行 SQL（C0001/P0001、constraint/runner/legacy fixture 测试）**只允许在 disposable temp database**（tempfile / tests tmp），测试结束自动删除。真实 core.db/private.db 创建、真实 legacy 迁移、stock_basic 下载均属 R1C Phase 2，需 Berlin 再批准。
+- **Alternatives**: 直接在真实路径执行（拒绝——违反“第一次执行只能在 disposable temp DB”原则）。
+- **Rationale**: 第一次失败不得污染任何真实数据。
+- **Consequences**: 测试套件全部用 tempfile.TemporaryDirectory()；测试后清理验证。
+- **Affected Files**: `tests/*.py`；`r1c_phase1_review_v1.md`
+- **Date**: 2026-08-22
+
+## DB-D043 — Production-path write guard（R1C Phase 1）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: `scripts/migrate.py` 设 `PRODUCTION_WRITES_ENABLED = False`；若 db-path resolve 到 `<repo>/data/runtime/core.db` 或 `<repo>/data/private/private.db`，即使无 --plan 也抛 `ProductionWriteNotAuthorizedError`。本轮只允许 tempfile / 显式 non-production path。
+- **Alternatives**: 提供 `--allow-production` 开关（拒绝——可被轻易误开，违背本轮安全目标）。
+- **Rationale**: OpenClaw 本轮不可能误建真实数据库。
+- **Consequences**: runner 生产路径保护 + 测试 test_production_core/private_path_refused。
+- **Affected Files**: `scripts/migrate.py`；`tests/test_migration_runner.py`
+- **Date**: 2026-08-22
+
+## DB-D044 — Migration runner implementation contract（R1C Phase 1）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: runner 实现遵循 DB-D034 事务契约 + DB-D029/D030（migration=canonical source；core/private 分历史）+ checksum 硬校验（MigrationChecksumError）+ 预检（文件名 C/P+4 位序号+snake、连续性、文件内禁 BEGIN/COMMIT/ROLLBACK，SQL-token-aware 去注释检测）+ schema_migrations bootstrap 单一 DDL（runner 与 C0001/P0001 一致，测试确认）+ plan/status 模式只读不建库 + backup gate。
+- **Alternatives**: 引入 Alembic/SQLAlchemy（拒绝——项目零第三方依赖原则）。
+- **Rationale**: 可审计、幂等、可回滚；与规格逐条对应。
+- **Consequences**: `scripts/migrate.py` + 6 个测试套件；Ran 62 tests OK。
+- **Affected Files**: `scripts/migrate.py`；`scripts/timestamp_utils.py`；`scripts/db_validators.py`；`scripts/legacy_migration_utils.py`；`tests/*`
+- **Date**: 2026-08-22

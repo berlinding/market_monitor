@@ -7,7 +7,11 @@
 
 ---
 
-## 0. Legacy 现状（2026-08-22 只读复核，事实基线）
+## 0. Documented Baseline（2026-08-22 只读复核）
+
+> ⚠️ **P0-1：以下数字是 documented_baseline（2026-08-22 快照），不是永久 migration invariant。**
+> 未来迁移执行时以 **migration_time_baseline**（M0 实际重新测量）为准（见 §2）。
+> 若届时 legacy cron 已新增交易日，行数/日期/标的数会变化——只要数据结构和一致性正常，**不是错误**。
 
 | 项 | 值 |
 |----|----|
@@ -29,44 +33,87 @@ fetch_log(trade_date, fetched_at, rows, note)
 
 ---
 
-## 1. 迁移分阶段总览（M0–M9）
+## 1. 迁移分阶段总览（M0–M9，P0-2 修正排序）
 
 | 阶段 | 名称 | 写入目标 | 可回滚 |
 |------|------|---------|--------|
-| M0 | Preflight | 无（只读 legacy） | — |
-| M1 | Backup & Raw Artifact Registration | core.db: raw_artifacts | 是（删 artifact 行） |
-| M2 | Source/Dataset Bootstrap | core.db: data_sources/datasets/dataset_sources | 是 |
-| M3 | Entity/Instrument Bootstrap | core.db: entities/instruments | 是 |
+| M0 | Live Legacy Preflight（dynamic baseline manifest） | 无（只读 legacy） | — |
+| M1 | Create & Validate Frozen Legacy Snapshot | `data/raw/legacy/`（非 canonical） | 是（删 snapshot 文件） |
+| M2 | Bootstrap Source / Dataset Metadata | core.db: data_sources/datasets/dataset_sources | 是 |
+| M2B | Register Frozen Snapshot as raw_artifact | core.db: raw_artifacts | 是（删 artifact 行） |
+| M3 | Entity / Instrument Bootstrap | core.db: entities/instruments | 是 |
 | M4 | Identifier Mapping | core.db: instrument_identifiers + 临时映射表 | 是 |
 | M5 | Ingest Run Backfill | core.db: ingest_runs | 是 |
-| M6 | Daily Bar Copy | core.db: market_prices_daily | 是（按 run 过滤删除） |
+| M6 | Daily Bar Copy（**只读 frozen snapshot**） | core.db: market_prices_daily | 是（按 run 过滤删除） |
 | M7 | Validation | 只读校验 | — |
 | M8 | Dual-write Observation | legacy + canonical 并行 | — |
 | M9 | Retirement Gate | 决策点（Berlin 批准） | — |
 
-每阶段必须在事务内完成或可整体回滚；**任何 abort 条件触发 → 立即停止，不"尽量迁完"**（§7）。
+**P0-2 关键不变量**：
+- backup creation/validation（M1）**不依赖 core metadata**；
+- raw_artifact registration（M2B）在 source/dataset 已存在（M2）后进行。
+
+**P0-3 关键不变量（frozen snapshot = 唯一 migration source）**：
+- live `data/market.db` 只用于 M0 preflight + M1 创建 consistent logical backup；
+- M1 backup validation PASS 后得到 `frozen_legacy_snapshot`；
+- **M2B–M7 所有历史迁移读取必须只来自 frozen snapshot**，禁止 M6 再从 live 读 daily_bars；
+- `migration_source_path` / `migration_source_hash` 固定为 M1 snapshot；
+- 若 live 在迁移期间继续新增数据：不影响本轮 historical migration（新数据属之后的 pipeline / dual-write）。
+
+每阶段必须在事务内完成或可整体回滚；**任何 abort 条件触发 → 立即停止，不"尽量迁完"**（§10）。
 
 ---
 
-## 2. M0 — Preflight（只读，不写 legacy）
+## 2. M0 — Live Legacy Preflight（P0-1 修正：动态 baseline + Migration Baseline Manifest）
 
-验证项：
+### 2.1 动态 baseline 原则
+
+- **documented_baseline**（2026-08-22）：16,620 行 / 3 日 / 5,546 标的 —— 仅历史参考。
+- **migration_time_baseline**：M0 执行时**重新实测**，后续 M1–M7 全部以该 manifest 为准。
+- **禁止**把 `COUNT(*) == 16,620` 等写成永久硬编码 abort 条件。
+- 若届时数据已增长（如 22,1xx 行）：只要数据结构和一致性正常，**不是错误**。
+
+### 2.2 Migration Baseline Manifest（M0 产出）
+
+M0 必须重新读取并记录（写 migration report / manifest，不写 legacy）：
+
+```json
+{
+  "captured_at": "<UTC ISO-8601>",
+  "source_path": "data/market.db",
+  "source_sha256": "<sha256>",
+  "file_size": 2252800,
+  "mtime": "2026-08-20T21:55:33",
+  "row_count": 16620,
+  "distinct_trade_dates": 3,
+  "trade_date_distribution": {"20260814": 5540, "20260817": 5539, "20260820": 5541},
+  "distinct_ts_code": 5546,
+  "fetch_log_count": 3,
+  "latest_fetch_time_raw": "2026-08-20T21:55:33"
+}
+```
+
+（字段值为 2026-08-22 documented baseline 示例；实际以 M0 实测为准。）
+
+### 2.3 M0 验证项（全部基于 migration_time_baseline）
 
 1. `data/market.db` 存在且可只读打开；
 2. `daily_bars` schema 与预期一致（列名/类型/主键 `(ts_code, trade_date)`）；
 3. `fetch_log` schema 一致；
-4. `COUNT(*)` == 16,620（以迁移时点实际值为准，2026-08-22 复核基线）；
-5. distinct trade_date == 3，值 ∈ {20260814, 20260817, 20260820}；
-6. distinct ts_code == 5,546；
-7. NULL 检查：daily_bars 无意外 NULL（列级 count(null) 全部为 0）；
-8. 重复 PK 检查：`SELECT COUNT(*) - COUNT(DISTINCT ts_code||trade_date) FROM daily_bars` == 0；
-9. 计算 SHA-256、记录 file size / mtime / row counts → 写入 preflight 报告（log + 内存，不写 legacy）。
+4. 实测 row_count / distinct_trade_dates / trade_date_distribution / distinct_ts_code / fetch_log_count / latest_fetch_time_raw，写入 manifest；
+5. NULL 检查：daily_bars 无意外 NULL（列级 count(null) 全部为 0）；
+6. 重复 PK 检查：`SELECT COUNT(*) - COUNT(DISTINCT ts_code||trade_date) FROM daily_bars` == 0；
+7. 计算 SHA-256、记录 file size / mtime；
+8. **枚举全部 ts_code suffix**（当前实测 SH/SZ/BJ）并校验均有 deterministic MIC mapping（见 §5.0）；未知 suffix → ABORT。
 
 **通过后才进入 M1。** 任一失败 → ABORT。
 
 ---
 
-## 3. M1 — Backup & Raw Artifact Registration（S5 修正：区分两种备份类型）
+## 3. M1 — Create & Validate Frozen Legacy Snapshot（P0-2/P0-3 修正）
+
+> **M1 只做一件事：创建并验证 frozen_legacy_snapshot。不写 core.db，不注册 raw_artifact（那是 M2B）。**
+> **从 M1 validation PASS 起，frozen snapshot = 唯一 migration source（P0-3）。**
 
 ### 3.1 备份类型判定
 
@@ -77,36 +124,31 @@ fetch_log(trade_date, fetched_at, rows, note)
 
 **本规格默认采用 Type B（logical backup）**——避免“cp 正在写入的 SQLite 文件”的一致性风险，且逻辑备份字节不必与源相同。
 
-### 3.2 Type B 校验（替代“源 hash == 备份 hash”的过强标准）
+### 3.2 Type B 校验（替代“源 hash == 备份 hash”的过强标准；数值以 migration_time_baseline manifest 为准）
 
 备份后对 **backup 文件**验证：
 
 1. `PRAGMA integrity_check` == ok；
 2. schema equality：表集合与列集合与源一致（`sqlite_master` 对比）；
-3. `daily_bars` row count equality == 16,620；
-4. `fetch_log` row count equality == 3；
-5. trade_date distribution equality == {20260814, 20260817, 20260820}；
-6. distinct ts_code equality == 5,546；
+3. `daily_bars` row count equality == manifest.row_count（2026-08-22 documented baseline 为 16,620，**以 M0 实测为准**）；
+4. `fetch_log` row count equality == manifest.fetch_log_count（baseline 3）；
+5. trade_date distribution equality == manifest.trade_date_distribution（baseline {20260814, 20260817, 20260820}）；
+6. distinct ts_code equality == manifest.distinct_ts_code（baseline 5,546）；
 7. SUM / aggregate reconciliation（SUM(close)、SUM(vol)、SUM(amount) 按 trade_date）一致。
 
 全部 PASS → backup 有效。任一 FAIL → ABORT。
 
-### 3.3 raw_artifact hash 语义（S5 修正）
+### 3.3 hash 语义（S5 修正）
 
-- **`content_hash` = 实际 backup artifact 文件自己的 SHA-256**（不是 source file hash）。
+- **backup artifact 的 `content_hash` = 实际 backup 文件自己的 SHA-256**（不是 source file hash）。
 - migration report 单独记录：
   - `legacy_source_hash`（源文件 hash，M0 计算）
   - `backup_artifact_hash`（备份文件 hash，即 content_hash）
   - `backup_method`（如 `sqlite3.Connection.backup()`）
   - `backup_validation_result`（integrity + schema + row + aggregate 各 PASS/FAIL）
+- **raw_artifact 登记不在 M1 执行**——移到 M2B（source/dataset 存在后）。M1 只产出并验证 frozen_legacy_snapshot。
 
-core.db 登记 raw_artifact（M2 后执行）：
-
-- `artifact_type='DB_SNAPSHOT'`，`dataset_id=CN_EQUITY_DAILY`，`source_id=TUSHARE`，
-  `run_id=NULL`（手工登记），`local_path_or_reference=data/raw/legacy/market_20260822_<hash8>.db`，
-  `content_hash=backup_artifact_hash`（**备份文件自己的 SHA-256**），`retrieved_at=<now UTC>`。
-
-### 3.4 Backup Gate（进入 M2/M3 前必须全部满足）
+### 3.4 Backup Gate（进入 M2 前必须全部满足）
 
 - backup created ✅
 - backup integrity_check PASS ✅
@@ -117,7 +159,7 @@ core.db 登记 raw_artifact（M2 后执行）：
 
 ---
 
-## 4. M2 — Source/Dataset Bootstrap
+## 4. M2 — Bootstrap Source / Dataset Metadata
 
 初始化（幂等，存在则跳过/核对）：
 
@@ -127,6 +169,36 @@ core.db 登记 raw_artifact（M2 后执行）：
 - `dataset_sources`: (CN_EQUITY_DAILY, TUSHARE, role='PRIMARY', priority_rank=1, is_active=1)
 
 不接入 FMP 等其它源（R1B 范围）。
+
+---
+
+## 4B. M2B — Register Frozen Snapshot as raw_artifact（P0-2 新增）
+
+> 在 M2（source/dataset 已存在）之后、M3 之前执行；M1 只产出 snapshot，不在这里重复备份。
+
+在 core.db 登记 frozen snapshot 为 raw_artifact：
+
+- `artifact_type='DB_SNAPSHOT'`
+- `dataset_id=CN_EQUITY_DAILY`（M2 已建）
+- `source_id=TUSHARE`（M2 已建）
+- `run_id=NULL`（手工登记）
+- `local_path_or_reference=<M1 snapshot path>`（如 `data/raw/legacy/market_20260822_<hash8>.db`）
+- `content_hash=backup_artifact_hash`（**M1 snapshot 文件自己的 SHA-256**）
+- `retrieved_at=<now UTC>`
+
+登记后得到 `legacy_snapshot_artifact_id`，供 M6 的 raw_artifact_id 使用。
+
+**P0-3 血缘链（从此固定）**：
+
+```
+live market.db
+  ↓ M0 inspect
+  ↓ M1 sqlite backup + validate
+validated frozen_legacy_snapshot  ← migration_source_path / migration_source_hash
+  ↓ M2B register raw_artifact
+  ↓ M3/M4/M5/M6 只读 frozen snapshot
+canonical rows (market_prices_daily 带 raw_artifact_id)
+```
 
 ---
 
@@ -152,7 +224,7 @@ legacy `daily_bars` 实际出现的 ts_code suffix（只读枚举）：
 
 流程（未来执行，R1C 实现）：
 
-1. 从 stock_basic 快照读取去重 ts_code（必须与 legacy distinct 5,546 完全一致——**strict mapping gate，见 §5.0/§6**）；
+1. **只读 frozen snapshot（P0-3）**：legacy ts_code 集合从 frozen_legacy_snapshot 读取（ATTACH snapshot 只读），与 manifest.distinct_ts_code 比对——**strict mapping gate，见 §5.0/§6**；
 2. 每个 ts_code：
    - `entities`：canonical_name=股票名称，entity_type='COMPANY'，country_code='CN'，
      `entity_uid=uuid4()`（**不是** hash(ts_code)，永久随机身份）；
@@ -192,14 +264,15 @@ legacy `daily_bars` 实际出现的 ts_code suffix（只读枚举）：
 - 建临时映射表 `_mig_ts_code_map(ts_code → instrument_id, instrument_uid)`（仅迁移期存在，完成后删除）；
 - 每行来自 M3 建立的 instrument + instrument_identifiers；
 - **strict mapping gate**：
-  `COUNT(DISTINCT legacy ts_code) == COUNT(_mig_ts_code_map rows)` 必须成立（当前基线 5,546 == 5,546）；
+  `COUNT(DISTINCT frozen snapshot ts_code) == COUNT(_mig_ts_code_map rows)` 必须成立
+  （migration-time baseline 以 manifest.distinct_ts_code 为准；2026-08-22 documented baseline 为 5,546）；
 - 任何无法映射的 ts_code → **ABORT BEFORE BAR COPY**（不允许带着未映射 instrument 继续）。
 
 ---
 
 ## 7. M5 — Ingest Run Backfill（S2 修正：legacy timestamp 时区语义）
 
-legacy fetch_log 3 行 → 3 条 `ingest_runs`（**started_at 必须经时区转换，见 §7.1**）：
+legacy fetch_log 3 行 → 3 条 `ingest_runs`（**从 frozen snapshot 读取 fetch_log（P0-3）；started_at 必须经时区转换，见 §7.1**）：
 
 | legacy fetch_log（raw） | ingest_runs（转换后） |
 |------------------------|----------------------|
@@ -250,9 +323,10 @@ legacy fetch_log 3 行 → 3 条 `ingest_runs`（**started_at 必须经时区转
 | — | ingested_at | 迁移执行时刻 UTC（应用层写入） |
 | **pre_close/change/pct_chg** | **不进入 canonical** | 派生值；原始值保留在 raw snapshot（B14） |
 
-SQL 形态（规格，不执行）：
+SQL 形态（规格，不执行；**只读 frozen snapshot，ATTACH 为 legacy 别名**）：
 
 ```sql
+ATTACH DATABASE '<frozen_snapshot_path>' AS legacy;  -- 只读
 INSERT INTO market_prices_daily
   (instrument_id, trade_date, open, high, low, close,
    volume, volume_unit, turnover, turnover_unit, currency_code,
@@ -260,11 +334,12 @@ INSERT INTO market_prices_daily
 SELECT m.instrument_id, d.trade_date, d.open, d.high, d.low, d.close,
        d.vol, 'LOTS', d.amount, 'THOUSAND_CNY', 'CNY',
        'RAW', :tushare_source_id, :run_id, :legacy_artifact_id, :now_utc
-FROM daily_bars d JOIN _mig_ts_code_map m ON m.ts_code = d.ts_code
+FROM legacy.daily_bars d JOIN _mig_ts_code_map m ON m.ts_code = d.ts_code
 WHERE d.trade_date = :trade_date;
 ```
 
-按 trade_date 分批（每批对应一个 run），批内事务。
+- **数据只来自 frozen_legacy_snapshot**（`migration_source_path` / `migration_source_hash` 固定）；live market.db 在迁移期间的后续新增不影响本轮 historical migration（P0-3）。
+- 按 trade_date 分批（每批对应一个 run），批内事务。
 
 ---
 

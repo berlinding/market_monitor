@@ -384,9 +384,6 @@ CREATE TABLE event_evidence (
 --   （不用随机 UUID 做业务 dedup key）；evidence_key 只需在单个 source namespace 内
 --   稳定确定，不强制 source_code:evidence_key 前缀（source_id 已在唯一键内）。
 -- 同内容不同 source 可共存（F6）；内容相同性检测走 content_hash 索引
--- evidence_key 生成规则（DB-D032）：provider native ID → normalized URL/ref
---   → artifact_uid → content-derived fallback（不用随机 UUID 做业务 dedup key）
--- 同内容不同 source 可共存（F6）；内容相同性检测走 content_hash 索引
 CREATE UNIQUE INDEX ux_event_evidence_primary
     ON event_evidence(event_id)
     WHERE is_primary = 1;                         -- 每事件至多一条主证据
