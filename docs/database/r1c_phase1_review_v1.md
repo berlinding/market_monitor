@@ -268,3 +268,84 @@
 **Blocking findings remaining = 0**
 
 **R1C PHASE 1.1 COMPLETE — READY FOR BERLIN APPROVAL OF PHASE 2**（仍不开始 Phase 2）
+
+---
+
+# R1C Phase 1.2 Canonical Date Contract Addendum（2026-08-22）
+
+> R1C Phase 1.2 对 canonical date contract 的专项复查（D1–D5）。
+> 格式：Severity / Problem / Code Change / Test Evidence / Residual Risk / Blocking?
+
+### C28. Legacy trade_date canonical normalization（D1）
+
+- **Severity**: HIGH — 已解决
+- **Problem**: legacy daily_bars.trade_date 为 compact YYYYMMDD（20260814）；fixture migrator 原样写入 canonical，违反 canonical contract（YYYY-MM-DD），且 V2 测试用 raw==raw 错误 oracle 掩盖。
+- **Code Change**: `migrate_bars_from_snapshot` 对 raw trade_date 调 `normalize_date()` 后写 canonical；`run_by_date` lookup 仍用 raw key（fetch_log 与 daily_bars 同为 YYYYMMDD）。新增 `scripts/date_utils.py`（normalize_date / DateNormalizationError / is_canonical_date）。
+- **Test Evidence**: T-CANONICAL-TRADE-DATE-01（canonical dates == {2026-08-14, 2026-08-17, 2026-08-20}；`assertNotIn("20260814")`）。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C29. stock_basic list_date normalization（D2）
+
+- **Severity**: HIGH — 已解决
+- **Problem**: Tushare stock_basic.list_date 常见 YYYYMMDD（19910403）；fixture 用 YYYY-MM-DD 太“干净”，未暴露 provider 格式问题。
+- **Code Change**: `validate_stock_basic_input` 要求 list_date 可被 normalize_date() 解析（catch DateNormalizationError → MappingGateError）；`build_ts_code_mapping` 输出 `list_date`（canonical）+ `provider_list_date_raw`；`build_stock_basic_fixture` 默认 list_date 改为 `20100101`（provider raw 风格）。M3 写 instruments.listing_date 与 instrument_identifiers.valid_from 一律用 canonical list_date。
+- **Test Evidence**: T-CANONICAL-LIST-DATE-01（20010827 → mapping/listing_date/valid_from == 2001-08-27）；T-STOCK-BASIC-DATE-INVALID-01/02（20260230 / abc → MappingGateError）；valid compact accepted。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C30. Invalid calendar-date rejection（D3）
+
+- **Severity**: HIGH — 已解决
+- **Problem**: 字符串切片式格式化会把 20260230 当作合法日期。
+- **Code Change**: `normalize_date` 用 `datetime.strptime` 严格解析（YYYYMMDD / YYYY-MM-DD），非法日历日期（20260230、20261340、20260229 非闰年、abcdefgh、2026/08/14、空/None/空白）→ DateNormalizationError（错误含原始输入）。
+- **Test Evidence**: test_date_utils.py T-DATE-01/02/03 + T-DATE-INVALID-01/02/03/04（全过）。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C31. V2 validation oracle correction（D4）
+
+- **Severity**: HIGH — 已解决
+- **Problem**: validate_migration V2 用 `canon_dates == legacy_dates`（raw==raw），错误格式互相匹配仍 PASS。
+- **Code Change**: 改为 `canon_dates == {normalize_date(d) for d in legacy_dates}`（normalized expectation vs canonical actual）。
+- **Test Evidence**: T-CANONICAL-TRADE-DATE-01（若 canonical 仍是 20260814 则 FAIL）。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C32. V12 aggregate date normalization（D4）
+
+- **Severity**: MEDIUM — 已解决
+- **Problem**: V12 直接比较 legacy_agg（raw date key）与 canon_agg（canonical date key），日期格式不同则恒不匹配或掩盖。
+- **Code Change**: `expected_legacy_agg = {(normalize_date(r[0]), r[1], r[2]) for r in legacy_agg}`，与 canon_agg 比较；manifest.aggregates 改为 JSON-safe dict（keyed by raw trade_date → {sum_volume, sum_turnover}），validate_snapshot 同步。
+- **Test Evidence**: T-MANIFEST-JSON-01（json.dumps(manifest, sort_keys=True) 成功）；既有 V12 断言全过。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C33. JSON-safe snapshot manifest（D4）
+
+- **Severity**: MEDIUM — 已解决
+- **Problem**: manifest["aggregates"] 原为 set[tuple]，Python 内存可用但无法 json.dumps。
+- **Code Change**: aggregates → `{raw_trade_date: {"sum_volume": ..., "sum_turnover": ...}}`；validate_snapshot 的 aggregate_self_consistency 同步。
+- **Test Evidence**: T-MANIFEST-JSON-01 PASS。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### C34. Regression suite（D1–D5）
+
+- **Severity**: HIGH — 已解决
+- **Problem**: 重构不得破坏既有 77 tests。
+- **Code Change**: 仅修实现（normalize 边界），未删旧测试。
+- **Test Evidence**: **Ran 99 tests — OK（0 failed / 0 errors / 0 skipped）**。H1–H4（snapshot baseline / duplicate stock_basic / CRLF checksum / CLI ambiguity / production guard）、ATOMIC、privacy、timezone 全部继续 PASS。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### R1C Phase 1.2 汇总
+
+| Severity | 数量 | 状态 |
+|----------|------|------|
+| HIGH | 5（C28 C29 C30 C31 C34 中计 5 项） | 已解决 |
+| MEDIUM | 2（C32 C33） | 已解决 |
+
+**Blocking findings remaining = 0**
+
+**R1C PHASE 1.2 COMPLETE — READY FOR BERLIN APPROVAL OF PHASE 2**（仍不开始 Phase 2）

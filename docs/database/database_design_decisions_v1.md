@@ -434,3 +434,43 @@
 - **Consequences**: T-SNAPSHOT-HASH-01（snapshot_sha256 == sha256(snapshot bytes)）；测试断言 manifest 全字段。
 - **Affected Files**: `scripts/legacy_migration_utils.py`；`docs/database/legacy_daily_bars_migration_spec_v1.md` §3.5
 - **Date**: 2026-08-22
+
+## DB-D050 — Canonical date format is YYYY-MM-DD（R1C Phase 1.2）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: 所有 canonical “date” 字段（market_prices_daily.trade_date、instruments.listing_date、instrument_identifiers.valid_from 等）严格 `YYYY-MM-DD`（如 2026-08-14、1991-04-03）。provider/raw 原始字符串（如 20260814）保持原样，不做覆盖；规范化只发生在 canonical boundary。
+- **Alternatives**: 允许 raw YYYYMMDD 直接入库（拒绝——跨 provider 混用格式，查询/比较不可靠）；datetime 类型（拒绝——SQLite 无原生 date，且与 TEXT contract 冲突）。
+- **Rationale**: 统一契约，杜绝 raw==raw 错误 oracle。
+- **Consequences**: `scripts/date_utils.py` 新增；migrate_bars_from_snapshot 写入前 normalize；instruments/identifiers 写入 canonical list_date；raw artifact 不改。
+- **Affected Files**: `scripts/date_utils.py`；`scripts/legacy_migration_utils.py`；`docs/database/legacy_daily_bars_migration_spec_v1.md` §5.2/§8
+- **Date**: 2026-08-22
+
+## DB-D051 — Provider compact dates normalized at canonical boundary（R1C Phase 1.2）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: provider/raw 日期（Tushare daily_bars.trade_date、stock_basic.list_date 常见 YYYYMMDD）在写入 canonical 前必须经 `normalize_date()`（严格 `datetime.strptime` 解析，接受 YYYYMMDD / YYYY-MM-DD，输出 YYYY-MM-DD；非法日历日期 → DateNormalizationError）。禁止字符串切片式格式化（会把 20260230 当合法）。
+- **Alternatives**: raw[:4]+... 切片（拒绝——不校验日历合法性）；provider 侧预转换（拒绝——污染 raw provenance）。
+- **Rationale**: normalization 集中在 canonical boundary，raw artifact 保持原样。
+- **Consequences**: date_utils 单元测试 T-DATE-01/02/03 + T-DATE-INVALID-01/02/03/04。
+- **Affected Files**: `scripts/date_utils.py`；`scripts/legacy_migration_utils.py`
+- **Date**: 2026-08-22
+
+## DB-D052 — Migration validation compares normalized date semantics（R1C Phase 1.2）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: migration validation 的日期对比必须基于 normalized 语义：V2 `canon_dates == {normalize_date(d) for d in legacy_dates}`；V12 aggregate 将 legacy 侧日期 key normalize 后与 canonical 比较；不再 raw==raw。
+- **Alternatives**: 保留 raw==raw oracle（拒绝——错误格式互相匹配仍 PASS，掩盖 bug）。
+- **Rationale**: 校验的是“canonical 是否等于 legacy 的规范化形式”，而非字节相同。
+- **Consequences**: validate_migration 修正；T-CANONICAL-TRADE-DATE-01 保证 20260814 不出现于 canonical。
+- **Affected Files**: `scripts/legacy_migration_utils.py` validate_migration；`tests/test_legacy_migration_fixture.py`
+- **Date**: 2026-08-22
+
+## DB-D053 — Migration baseline manifest must be JSON-safe（R1C Phase 1.2）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: snapshot manifest（capture_snapshot_baseline 产出）必须可 `json.dumps()` 序列化；`aggregates` 采用 `{raw_trade_date: {"sum_volume": ..., "sum_turnover": ...}}`（dict keyed by raw trade date），不用 set[tuple]。validate_snapshot 的 aggregate 自洽校验同步。
+- **Alternatives**: set[tuple]（拒绝——TypeError: set not JSON serializable，Phase 2 migration report 无法落盘）。
+- **Rationale**: 为 Phase 2 的 migration report / manifest 落盘做前置。
+- **Consequences**: T-MANIFEST-JSON-01（json.dumps(sort_keys=True) 成功）。
+- **Affected Files**: `scripts/legacy_migration_utils.py`；`tests/test_legacy_migration_fixture.py`
+- **Date**: 2026-08-22

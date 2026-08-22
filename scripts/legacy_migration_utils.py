@@ -24,6 +24,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from scripts.date_utils import DateNormalizationError, normalize_date
 from scripts.timestamp_utils import convert_legacy_naive_to_utc
 
 # deterministic suffix -> MIC mapping (S4 / DB-D037); extend with new exchanges only via decision.
@@ -85,14 +86,18 @@ def create_legacy_fixture(
 
 
 def build_stock_basic_fixture(ts_codes: list[str]) -> list[dict]:
-    """Synthetic stock_basic rows (ts_code, name, list_date)."""
+    """Synthetic stock_basic rows (ts_code, name, list_date).
+
+    list_date uses the provider-raw compact format (YYYYMMDD) to exercise
+    canonical normalization, matching real Tushare stock_basic output (D2).
+    """
     out = []
     for i, ts in enumerate(ts_codes, start=1):
         out.append(
             {
                 "ts_code": ts,
                 "name": f"Fixture Co {i}",
-                "list_date": "2010-01-01",
+                "list_date": "20100101",
             }
         )
     return out
@@ -199,7 +204,7 @@ def capture_snapshot_baseline(snapshot_path: Path) -> dict:
             }
         )
         aggregates = {
-            (r[0], r[1], r[2])
+            r[0]: {"sum_volume": r[1], "sum_turnover": r[2]}
             for r in conn.execute(
                 "SELECT trade_date, SUM(vol), SUM(amount) FROM daily_bars "
                 "GROUP BY trade_date"
@@ -278,7 +283,7 @@ def validate_snapshot(snapshot_path: Path, manifest: dict) -> dict[str, bool]:
         ).fetchone()[0]
         fetch_count = conn.execute("SELECT COUNT(*) FROM fetch_log").fetchone()[0]
         agg = {
-            (r[0], r[1], r[2])
+            r[0]: {"sum_volume": r[1], "sum_turnover": r[2]}
             for r in conn.execute(
                 "SELECT trade_date, SUM(vol), SUM(amount) FROM daily_bars "
                 "GROUP BY trade_date"
@@ -308,7 +313,8 @@ def validate_snapshot(snapshot_path: Path, manifest: dict) -> dict[str, bool]:
 # M3/M4 — instrument mapping (strict gate, DB-D037 + H2)
 # ---------------------------------------------------------------------------
 def validate_stock_basic_input(stock_basic: list[dict]) -> None:
-    """H2: stock_basic input validation — duplicates and missing fields are fatal.
+    """H2 + D2: stock_basic input validation — duplicates, missing fields and
+    invalid list_date are fatal.
 
     Raises MappingGateError (never last-one-wins / drop_duplicates / silent fill).
     """
@@ -333,6 +339,13 @@ def validate_stock_basic_input(stock_basic: list[dict]) -> None:
             raise MappingGateError(
                 f"stock_basic row missing/empty list_date for ts_code {ts!r}: {row!r}"
             )
+        try:
+            normalize_date(list_date)
+        except DateNormalizationError as exc:
+            raise MappingGateError(
+                f"invalid list_date for ts_code {ts!r}: {list_date!r} "
+                f"(must be a real calendar date YYYYMMDD or YYYY-MM-DD)"
+            ) from exc
         if ts in seen:
             raise MappingGateError(
                 f"duplicate stock_basic ts_code: {ts!r} appears more than once; "
@@ -346,9 +359,11 @@ def build_ts_code_mapping(
 ) -> dict[str, dict]:
     """Map every distinct legacy ts_code to a deterministic instrument identity.
 
-    Returns {ts_code: {"symbol": ..., "mic": ..., "entity_name": ...}}.
+    Returns {ts_code: {"symbol", "mic", "entity_name", "list_date" (canonical
+    YYYY-MM-DD), "provider_list_date_raw"}}.
     Raises MappingGateError on:
       * malformed stock_basic row (missing ts_code/name/list_date)  [H2]
+      * invalid list_date calendar value                            [D2]
       * duplicate stock_basic ts_code                              [H2]
       * missing legacy ts_code in stock_basic                      [strict gate]
       * unknown suffix                                             [strict gate]
@@ -380,11 +395,13 @@ def build_ts_code_mapping(
         if ts in mapping:
             raise MappingGateError(f"duplicate mapping for {ts}")
         symbol = ts.split(".")[0]
+        raw_list_date = basic[ts]["list_date"]
         mapping[ts] = {
             "symbol": symbol,
             "mic": SUFFIX_MIC[suffix],
             "entity_name": basic[ts]["name"],
-            "list_date": basic[ts]["list_date"],
+            "list_date": normalize_date(raw_list_date),
+            "provider_list_date_raw": raw_list_date,
         }
     return mapping
 
@@ -433,7 +450,12 @@ def migrate_bars_from_snapshot(
     adjustment_type: str = "RAW",
     currency_code: str = "CNY",
 ) -> int:
-    """Copy daily_bars from frozen snapshot into canonical market_prices_daily."""
+    """Copy daily_bars from frozen snapshot into canonical market_prices_daily.
+
+    D1: legacy trade_date is compact YYYYMMDD; canonical trade_date is written
+    as YYYY-MM-DD via normalize_date(). run_by_date lookup keeps using the raw
+    legacy key (fetch_log.trade_date == legacy daily_bars.trade_date == YYYYMMDD).
+    """
     snap = sqlite3.connect(f"file:{snapshot_path.resolve()}?mode=ro", uri=True)
     count = 0
     try:
@@ -443,10 +465,9 @@ def migrate_bars_from_snapshot(
                 "FROM daily_bars WHERE ts_code = ?",
                 (ts,),
             ).fetchall()
-            for trade_date, o, h, l, c, vol, amt in rows:
-                run_id = run_by_date[trade_date]
-                # instrument_id surrogate is assigned by the caller-provided
-                # mapping table (fixture keeps it deterministic).
+            for raw_trade_date, o, h, l, c, vol, amt in rows:
+                run_id = run_by_date[raw_trade_date]
+                canonical_trade_date = normalize_date(raw_trade_date)
                 instrument_id = m["instrument_id"]
                 conn.execute(
                     "INSERT INTO market_prices_daily"
@@ -457,7 +478,7 @@ def migrate_bars_from_snapshot(
                     " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         instrument_id,
-                        trade_date,
+                        canonical_trade_date,
                         o,
                         h,
                         l,
@@ -536,11 +557,18 @@ def validate_migration(
         "|| adjustment_type || '|' || source_id) FROM market_prices_daily"
     ).fetchone()[0]
 
+    # D4: canonical dates are normalized YYYY-MM-DD; compare against the
+    # normalized expectation derived from legacy raw dates (not raw == raw).
+    expected_canonical_dates = {normalize_date(d) for d in legacy_dates}
+    expected_legacy_agg = {
+        (normalize_date(r[0]), r[1], r[2]) for r in legacy_agg
+    }
+
     return {
         "V1_row_count": canon_rows == legacy_rows == manifest["row_count"],
-        "V2_trade_dates": canon_dates == legacy_dates,
+        "V2_trade_dates": canon_dates == expected_canonical_dates,
         "V3_mapping_complete": len(mapping) == manifest["distinct_ts_code"]
         and canon_ts == legacy_ts,
         "V4_no_duplicate_keys": dup_keys == 0,
-        "V12_aggregate_reconciliation": canon_agg == legacy_agg,
+        "V12_aggregate_reconciliation": canon_agg == expected_legacy_agg,
     }

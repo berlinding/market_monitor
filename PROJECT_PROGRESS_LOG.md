@@ -555,3 +555,41 @@ Berlin 批准 R1B/R1B.1，授权 R1C Phase 0（Pre-Implementation Reconciliation
 ### Next
 
 - **Berlin approval for Phase 2**（Full-Scale Real-Data Staging Rehearsal：real market.db → real frozen snapshot → real stock_basic snapshot → staging core/private.db → full V1–V12 → Berlin review；不直接写正式 canonical DB）。
+
+---
+
+## 2026-08-22 — R1C Phase 1.2 Canonical Date Contract Fix
+
+### Problem
+
+legacy/provider 日期是 compact `YYYYMMDD`（daily_bars.trade_date、Tushare stock_basic.list_date），而 canonical 契约要求 `YYYY-MM-DD`。旧 fixture migrator 原样写入 canonical（20260814），V2 校验又用 raw==raw 错误 oracle，导致错误格式互相匹配仍 PASS。
+
+### Implementation
+
+- 新增 `scripts/date_utils.py`：`normalize_date()`（严格 `datetime.strptime`，接受 YYYYMMDD / YYYY-MM-DD，输出 YYYY-MM-DD；非法日历日期 → `DateNormalizationError`，错误含原始输入）+ `is_canonical_date()`。
+- `scripts/legacy_migration_utils.py`：
+  - **trade_date 规范化（D1）**：`migrate_bars_from_snapshot` 写 canonical 前调 normalize_date；`run_by_date` lookup 仍用 raw key（fetch_log 与 daily_bars 同为 YYYYMMDD）；
+  - **list_date 规范化（D2）**：`validate_stock_basic_input` 要求 list_date 可解析（catch DateNormalizationError → MappingGateError）；mapping 输出 `list_date`（canonical）+ `provider_list_date_raw`；`build_stock_basic_fixture` 默认改为 provider raw `20100101`；
+  - **V2/V12 修正（D4）**：`validate_migration` 用 `{normalize_date(d) for d in legacy_dates}` 与 canonical 比较；aggregate 的 legacy 侧日期 key normalize 后比较；
+  - **manifest JSON-safe（D4）**：aggregates → `{raw_trade_date: {"sum_volume", "sum_turnover"}}`；validate_snapshot 同步。
+
+### Tests
+
+- 新增 `tests/test_date_utils.py`（T-DATE-01/02/03、T-DATE-INVALID-01/02/03/04、is_canonical_date）
+- fixture 测试新增：T-CANONICAL-TRADE-DATE-01（canonical dates == {2026-08-14, 2026-08-17, 2026-08-20}；assertNotIn "20260814"）、T-CANONICAL-LIST-DATE-01（20010827 → mapping/listing_date/valid_from == 2001-08-27）、T-STOCK-BASIC-DATE-INVALID-01/02（20260230/abc → MappingGateError）、T-MANIFEST-JSON-01（json.dumps 成功）、valid compact accepted
+- 文档同步：legacy spec §5.2/§8（date semantics）、§3.2 H1 残留清理（snapshot-internal，不再与 live source 比较）
+
+### Results
+
+- **Ran 99 tests — OK（0 failed / 0 errors / 0 skipped）**（原 77 + 新增 22）
+- Phase 1.1 H1–H4 与既有全部回归 PASS
+
+### Safety
+
+- real core.db = **NO**；real private.db = **NO**
+- real snapshot = **NO**；real stock_basic download = **NO**；market.db modified = **NO**（sha256 不变）
+- real migration = **NO**（16,620 行原样保留）；无联网调用
+
+### Next
+
+- **Berlin review for Phase 2**（不自动开始）。

@@ -32,27 +32,27 @@ R9 — Quant Layer
 - **R1C Phase 0 — Pre-Implementation Reconciliation**（2026-08-22，P0-1/P0-2/P0-3）
 - **R1C Phase 1 — Temp-DB Implementation & Validation**（2026-08-22，62 tests OK）
 - **R1C Phase 1.1 — Final Pre-Production Hardening**（2026-08-22，H1–H4，77 tests OK）
+- **R1C Phase 1.2 — Canonical Date Contract Fix**（2026-08-22，D1–D5，99 tests OK）
 
 ## Current
 
-- **R1C Phase 1/1.1 artifacts awaiting Berlin approval for Phase 2**
-- 实现：`scripts/migrate.py`（runner）+ `scripts/db_validators.py` + `scripts/timestamp_utils.py` + `scripts/legacy_migration_utils.py`
-- 测试：`tests/` 6 个文件，**Ran 77 tests — OK（0 failed / 0 errors / 0 skipped）**：C0001/P0001 temp 执行、runner 原子性、17+ 约束、cross-db uid、synthetic legacy fixture（T-FROZEN-SOURCE-01/T-BASELINE-01/T-SNAPSHOT-BASELINE-01/T-SNAPSHOT-HASH-01/T-BACKUP-01/T-MAPPING-01/T-MAPPING-DUPLICATE-01/T-MAPPING-MISSING-FIELD-01/T-TIMEZONE-01/02/T-CHECKSUM-CRLF-01/T-MIGRATION-ENCODING-01/T-CLI-ALL-DBPATH-01/T-PROD-SYMLINK-01）、隐私边界
-- Review：`docs/database/r1c_phase1_review_v1.md`（C1–C19 + Phase 1.1 Addendum C20–C27 全 PASS，**Blocking findings = 0**）
-- Decision Register：DB-D001–D049
+- **R1C Phase 1/1.1/1.2 complete — awaiting Berlin approval for Phase 2**
+- 实现：`scripts/migrate.py`（runner）+ `scripts/db_validators.py` + `scripts/timestamp_utils.py` + `scripts/date_utils.py` + `scripts/legacy_migration_utils.py`
+- 测试：`tests/` 7 个文件，**Ran 99 tests — OK（0 failed / 0 errors / 0 skipped）**
+- Review：`docs/database/r1c_phase1_review_v1.md`（C1–C34 全 PASS，**Blocking findings = 0**）
+- Decision Register：DB-D001–D053
 - 无进行中的实施工作；**未创建任何真实数据库，未迁移数据**
 
-## Validation（R1C Phase 1.1）
+## Validation（R1C Phase 1.2）
 
-- Temp core schema（C0001 17 表）PASS
-- Temp private schema（P0001 7 业务表 + schema_migrations）PASS
-- Runner atomicity PASS（事务原子 + checksum raw-bytes + plan/status 无写 + 生产路径保护 + `--db all`+`--db-path` 拒绝）
-- Snapshot baseline authority PASS（live 只做 health preflight；authoritative manifest 从 frozen snapshot 生成；validate_snapshot 不重开 live）
-- stock_basic input validation PASS（duplicate / missing field → ABORT）
-- Constraint tests PASS（17+ 案例）
-- Synthetic legacy fixture PASS（frozen snapshot 唯一源 + dynamic baseline + mapping gate + backup Type B）
-- Privacy tests PASS（core 无 private 数据；private 无 credential）
-- 真实 legacy 时区：**CONFIRMED = Asia/Shanghai**（/etc/timezone + 系统 CST + git author +0800 交叉验证）
+- Canonical trade_date = YYYY-MM-DD PASS（legacy 20260814 → canonical 2026-08-14；T-CANONICAL-TRADE-DATE-01）
+- Canonical listing_date = YYYY-MM-DD PASS（20010827 → 2001-08-27；T-CANONICAL-LIST-DATE-01）
+- Canonical valid_from = YYYY-MM-DD PASS（instrument_identifiers.valid_from == 2001-08-27）
+- Invalid dates fail-fast PASS（20260230/20261340/abcdefgh/空 → DateNormalizationError / MappingGateError）
+- Snapshot manifest JSON-safe PASS（json.dumps 成功；T-MANIFEST-JSON-01）
+- V2/V12 校验用 normalized date semantics（不再 raw==raw oracle）
+- 其余全部 PASS：Temp core/private schema、runner atomicity、constraints、cross-db uid、legacy fixture、privacy、H1–H4
+- 真实 legacy 时区：**CONFIRMED = Asia/Shanghai**
 
 ## Real DB
 
@@ -116,14 +116,13 @@ R9 — Quant Layer
 4. ~~event_evidence 同源多版本证据是否需要 version 列~~ —— **已解决**：DB-D032/D036 evidence_key（R1 用 evidence_key；若未来需严格同源版本历史再评估 version 列）
 5. legacy fetched_at 时区：R1C 执行前必须 CONFIRMED（Asia/Shanghai 或 Berlin 确认），否则迁移暂停（S2/DB-D035）
 
-## Key Decisions（2026-08-22 R1C Phase 1.1 增量，详见 DB-D045–D049）
+## Key Decisions（2026-08-22 R1C Phase 1.2 增量，详见 DB-D050–D053）
 
-- Frozen snapshot owns authoritative migration baseline：live 只做 health preflight；manifest 从 snapshot 生成；validate_snapshot 不重开 live（DB-D045）
-- stock_basic duplicate identity input is fatal：显式校验，绝不 last-one-wins（DB-D046）
-- Migration checksum = SHA-256(exact raw migration file bytes)，单次计算（DB-D047）
-- --db all + --db-path 互斥，parser.error 拒绝（DB-D048）
-- Snapshot manifest contract：字段契约 + aggregates（DB-D049）
+- Canonical date format is YYYY-MM-DD（trade_date/listing_date/valid_from；raw 保持原样）（DB-D050）
+- Provider compact dates normalized at canonical boundary（normalize_date 严格 strptime；非法 → error）（DB-D051）
+- Migration validation compares normalized date semantics（V2/V12 不再 raw==raw）（DB-D052）
+- Migration baseline manifest must be JSON-safe（aggregates 用 dict；json.dumps 成功）（DB-D053）
 
 ## Next Authorized Step
 
-- Berlin 审查 R1C Phase 1/1.1 → 批准后 R1C Phase 2 — Full-Scale Real-Data Staging Rehearsal
+- Berlin 审查 R1C Phase 1/1.1/1.2 → 批准后 R1C Phase 2 — Full-Scale Real-Data Staging Rehearsal

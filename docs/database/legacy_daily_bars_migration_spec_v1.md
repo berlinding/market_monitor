@@ -107,17 +107,17 @@ fetch_log(trade_date, fetched_at, rows, note)
 
 **本规格默认采用 Type B（logical backup）**——避免“cp 正在写入的 SQLite 文件”的一致性风险，且逻辑备份字节不必与源相同。
 
-### 3.2 Type B 校验（替代“源 hash == 备份 hash”的过强标准；数值以 migration_time_baseline manifest 为准）
+### 3.2 Type B 校验（替代“源 hash == 备份 hash”的过强标准；H1：snapshot-internal）
 
-备份后对 **backup 文件**验证：
+备份后对 **backup 文件**验证（**全部为 snapshot 内部检查，不重开 live DB**，细则见 §3.6 M1C）：
 
 1. `PRAGMA integrity_check` == ok；
-2. schema equality：表集合与列集合与源一致（`sqlite_master` 对比）；
-3. `daily_bars` row count equality == manifest.row_count（2026-08-22 documented baseline 为 16,620，**以 M0 实测为准**）；
+2. schema：必需表（daily_bars / fetch_log）与必需列存在（`sqlite_master` + `PRAGMA table_info`）；
+3. `daily_bars` row count equality == manifest.row_count（2026-08-22 documented baseline 为 16,620，**以 snapshot manifest 实测为准**）；
 4. `fetch_log` row count equality == manifest.fetch_log_count（baseline 3）；
 5. trade_date distribution equality == manifest.trade_date_distribution（baseline {20260814, 20260817, 20260820}）；
 6. distinct ts_code equality == manifest.distinct_ts_code（baseline 5,546）；
-7. SUM / aggregate reconciliation（SUM(close)、SUM(vol)、SUM(amount) 按 trade_date）一致。
+7. SUM / aggregate reconciliation（SUM(vol)、SUM(amount) 按 trade_date）== manifest.aggregates（JSON-safe dict）。
 
 全部 PASS → backup 有效。任一 FAIL → ABORT。
 
@@ -281,6 +281,11 @@ legacy `daily_bars` 实际出现的 ts_code suffix（只读枚举）：
 >   - **duplicate ts_code → MappingGateError**（绝不 last-one-wins / first-one-wins / drop_duplicates）；
 >   - **每行必须含 ts_code / name / list_date**，缺失/空/畸形 → MappingGateError（不创建半完整 identity）；
 >   - 校验函数：`validate_stock_basic_input()`；测试 T-MAPPING-DUPLICATE-01 / T-MAPPING-MISSING-FIELD-01。
+> **D2（R1C Phase 1.2）**：stock_basic.list_date 为 provider raw 常见 `YYYYMMDD`（如 19910403）；
+>   - 必须能被 `normalize_date()` 解析为真实日历日期，非法（20260230/abc）→ MappingGateError；
+>   - mapping 保存 `list_date`（canonical `YYYY-MM-DD`）与 `provider_list_date_raw`（原始值，诊断用）；
+>   - **instruments.listing_date 与 instrument_identifiers.valid_from 一律写 canonical list_date**（DB-D050）；
+>   - raw snapshot/CSV 原样保留（raw provenance vs canonical normalization 边界，不改写 raw artifact）。
 
 ---
 
@@ -329,24 +334,29 @@ legacy fetch_log 3 行 → 3 条 `ingest_runs`（**从 frozen snapshot 读取 fe
 
 ---
 
-## 8. M6 — Daily Bar Copy
+## 8. M6 — Daily Bar Copy（D1 修正：trade_date 规范化）
 
-字段映射（copy，不做数值变换）：
+字段映射（copy，不做数值变换；**trade_date 必须规范化**）：
 
-| daily_bars | market_prices_daily | 说明 |
+| daily_bars（raw） | market_prices_daily（canonical） | 说明 |
 |------------|---------------------|------|
 | ts_code | instrument_id | 经 _mig_ts_code_map |
-| trade_date | trade_date | 格式归一（YYYYMMDD → YYYY-MM-DD，应用层转换） |
+| **trade_date（YYYYMMDD，如 20260814）** | **trade_date（YYYY-MM-DD，如 2026-08-14）** | **必须经 `normalize_date()`（D1/DB-D050）** |
 | open/high/low/close | open/high/low/close | 原样 |
 | vol | volume, volume_unit='LOTS' | 不换算 |
 | amount | turnover, turnover_unit='THOUSAND_CNY' | 不换算 |
 | — | currency_code='CNY' | 常量 |
 | — | adjustment_type='RAW' | 常量 |
 | — | source_id=TUSHARE | 常量 |
-| — | ingest_run_id | 经 M5 映射（**必填**） |
+| — | ingest_run_id | 经 M5 映射（**必填**；run_by_date 用 raw trade_date 作 key） |
 | — | raw_artifact_id | = M1 legacy snapshot artifact（**必填**） |
 | — | ingested_at | 迁移执行时刻 UTC（应用层写入） |
 | **pre_close/change/pct_chg** | **不进入 canonical** | 派生值；原始值保留在 raw snapshot（B14） |
+
+> **D1 规则**：legacy/fetch_log 的 trade_date 是 compact `YYYYMMDD`（raw 保留原样）；
+> canonical `market_prices_daily.trade_date` 严格 `YYYY-MM-DD`（经 `normalize_date()`）。
+> `run_by_date` lookup 继续用 legacy raw key（`20260814`），canonical 值只写入目标列。
+> 非法日历日期（如 20260230）→ `DateNormalizationError` → ABORT。
 
 SQL 形态（规格，不执行；**只读 frozen snapshot，ATTACH 为 legacy 别名**）：
 

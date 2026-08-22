@@ -237,6 +237,130 @@ class TestStockBasicInputValidation(unittest.TestCase):
             [{"ts_code": "000001.SZ", "name": "A", "list_date": "1991-01-01"}]
         )
 
+    def test_invalid_list_date_calendar_fails_fast(self):
+        """T-STOCK-BASIC-DATE-INVALID-01: 20260230 is not a real date."""
+        with tempfile.TemporaryDirectory() as td:
+            snapshot = self._snapshot_for(td)
+            bad = lmu.build_stock_basic_fixture(TS_CODES)
+            bad[0]["list_date"] = "20260230"
+            with self.assertRaises(lmu.MappingGateError) as ctx:
+                lmu.build_ts_code_mapping(snapshot, bad)
+            self.assertIn("list_date", str(ctx.exception))
+            self.assertIn("600519.SH", str(ctx.exception))
+
+    def test_invalid_list_date_alpha_fails_fast(self):
+        """T-STOCK-BASIC-DATE-INVALID-02: 'abc' is not a date."""
+        with tempfile.TemporaryDirectory() as td:
+            snapshot = self._snapshot_for(td)
+            bad = lmu.build_stock_basic_fixture(TS_CODES)
+            bad[0]["list_date"] = "abc"
+            with self.assertRaises(lmu.MappingGateError):
+                lmu.build_ts_code_mapping(snapshot, bad)
+
+    def test_valid_compact_list_date_accepted(self):
+        """Provider-raw compact list_date (e.g. 19910403) is accepted and
+        normalized to canonical YYYY-MM-DD in the mapping."""
+        with tempfile.TemporaryDirectory() as td:
+            snapshot = self._snapshot_for(td)
+            basic = lmu.build_stock_basic_fixture(TS_CODES)
+            basic[0]["list_date"] = "19910403"
+            mapping = lmu.build_ts_code_mapping(snapshot, basic)
+            self.assertEqual(mapping[TS_CODES[0]]["list_date"], "1991-04-03")
+            self.assertEqual(
+                mapping[TS_CODES[0]]["provider_list_date_raw"], "19910403"
+            )
+
+
+class TestCanonicalDateContract(unittest.TestCase):
+    """R1C Phase 1.2: canonical date fields are strictly YYYY-MM-DD."""
+
+    def _run_pipeline(self, td, snapshot, manifest, mapping, backup_hash):
+        return TestFrozenSnapshotSource()._run_canonical_pipeline(
+            td, snapshot, manifest, mapping, backup_hash
+        )
+
+    def test_canonical_trade_date(self):
+        """T-CANONICAL-TRADE-DATE-01: legacy 20260814 -> canonical 2026-08-14."""
+        with tempfile.TemporaryDirectory() as td:
+            live = Path(td) / "live.db"
+            lmu.create_legacy_fixture(live, make_bars(), make_fetch_log())
+            snapshot = Path(td) / "snapshot.db"
+            backup_hash = lmu.create_frozen_snapshot(live, snapshot)
+            manifest = lmu.capture_snapshot_baseline(snapshot)
+            mapping = lmu.build_ts_code_mapping(
+                snapshot, lmu.build_stock_basic_fixture(TS_CODES)
+            )
+            _, val = self._run_pipeline(td, snapshot, manifest, mapping, backup_hash)
+            self.assertTrue(all(val.values()), msg=val)
+
+            core_db = Path(td) / "core.db"
+            conn = migrate.connect_db(core_db)
+            try:
+                dates = {
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT DISTINCT trade_date FROM market_prices_daily"
+                    )
+                }
+            finally:
+                conn.close()
+            self.assertEqual(
+                dates, {"2026-08-14", "2026-08-17", "2026-08-20"}
+            )
+            self.assertNotIn("20260814", dates)  # raw compact must not leak
+
+    def test_canonical_list_date(self):
+        """T-CANONICAL-LIST-DATE-01: provider 20010827 -> canonical 2001-08-27
+        in mapping, instruments.listing_date and identifiers.valid_from."""
+        with tempfile.TemporaryDirectory() as td:
+            live = Path(td) / "live.db"
+            lmu.create_legacy_fixture(live, make_bars(), make_fetch_log())
+            snapshot = Path(td) / "snapshot.db"
+            backup_hash = lmu.create_frozen_snapshot(live, snapshot)
+            manifest = lmu.capture_snapshot_baseline(snapshot)
+
+            stock_basic = lmu.build_stock_basic_fixture(TS_CODES)
+            # provider-raw compact list_date (Tushare style)
+            stock_basic[0]["list_date"] = "20010827"
+            mapping = lmu.build_ts_code_mapping(snapshot, stock_basic)
+            self.assertEqual(mapping[TS_CODES[0]]["list_date"], "2001-08-27")
+            self.assertEqual(
+                mapping[TS_CODES[0]]["provider_list_date_raw"], "20010827"
+            )
+
+            _, val = self._run_pipeline(td, snapshot, manifest, mapping, backup_hash)
+            self.assertTrue(all(val.values()), msg=val)
+
+            core_db = Path(td) / "core.db"
+            conn = migrate.connect_db(core_db)
+            try:
+                listing = conn.execute(
+                    "SELECT listing_date FROM instruments WHERE primary_symbol=?",
+                    (TS_CODES[0].split(".")[0],),
+                ).fetchone()[0]
+                valid_from = conn.execute(
+                    "SELECT valid_from FROM instrument_identifiers "
+                    "WHERE identifier=?",
+                    (TS_CODES[0],),
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(listing, "2001-08-27")
+            self.assertEqual(valid_from, "2001-08-27")
+
+    def test_manifest_json_serializable(self):
+        """T-MANIFEST-JSON-01: json.dumps(snapshot manifest) must succeed."""
+        import json
+        with tempfile.TemporaryDirectory() as td:
+            live = Path(td) / "live.db"
+            lmu.create_legacy_fixture(live, make_bars(), make_fetch_log())
+            snapshot = Path(td) / "snapshot.db"
+            lmu.create_frozen_snapshot(live, snapshot)
+            manifest = lmu.capture_snapshot_baseline(snapshot)
+            s = json.dumps(manifest, sort_keys=True)
+            self.assertIsInstance(s, str)
+            self.assertIn("aggregates", s)
+
 
 class TestFrozenSnapshotSource(unittest.TestCase):
     def _run_canonical_pipeline(self, td, snapshot, manifest, mapping,
