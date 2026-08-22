@@ -169,3 +169,74 @@ Berlin 在项目根新增 `API.txt`（含全部 API token，包括 GitHub token�
 ### Next Step
 
 - 后续所有 git 操作遵循新规则（SSH 推送 + 提交前敏感文件检查）。
+
+---
+
+## 2026-08-22 — R1A.1 Recovery, Repository Reconciliation & Schema Freeze Candidate
+
+### Task
+
+恢复项目治理一致性：确认 R1A.1 真实完成状态；处理未纳入治理的 dashboard prototype；完成 R1A v2 Freeze Candidate（7 份文档）。**禁止进入 R1B。**
+
+### Recovery Findings
+
+- **R1A.1 判定：Case C —— 本地与远端均无任何 R1A.1 成果**（无 v2_freeze_candidate / database_design_decisions_v1 / r1a1_schema_review_v2），需要重新生成，无"已完成未 push"或"部分完成"情形。
+- R1A（6 份 v1 文档）与 Credential Security 此前已在 GitHub main 完成闭环（本地 73e1f65 为远端 afef354 的祖先，无本地未 push 提交）。
+
+### Repository Drift（首次进入治理）
+
+- `Test1`（21B 测试残留，内容 "This is a test file."）：commit `6b4a7ea`（2026-08-16，Berlin 本人）加入；未纳入任何治理。
+- `chart.umd.min.js`（Chart.js UMD）`index.html`（面板前端）`data/dashboard_data.js`（筛选数据）：commit `65e03fb`（2026-08-16）首次加入，`4617a8e`（08-17）与 `afef354`（08-20）更新数据。
+- dashboard 生成脚本 `sync_data.py`：**从未提交**（文件头声明存在，全历史 grep 无此文件）；dashboard_data.js 的 generated_at 与 commit 时间一致，说明为手工运行后提交；无定时任务（OpenClaw cron 仅有 daily-download）。
+- 数据来源：公开市场数据（港股 ticker/股息率/估值等），**无私人数据**，可在 Git 保留。
+- 归属判定：属于 Market Monitor 工作区的独立 prototype（Dividend / Quality Screener Dashboard），**未接入 canonical DB**，不属于 R1 Core implementation。
+- 本轮未删除、未移动 dashboard 文件；记录：root-level dashboard prototype requires later structural cleanup（另开任务决定迁移 dashboard/ web/ prototypes/）。
+
+### Schema Corrections（B1–B14 全部落实）
+
+- **B1** Entity identifiers 新增（LEI/SEC_CIK/PROVIDER_COMPANY_ID 属 Entity）
+- **B2** entities.canonical_name 去 UNIQUE
+- **B3** Stable UID：UUIDv4（stdlib），entity/instrument/event/account/artifact/evidence uid；跨库引用只用 uid（修订 v1 决策 8）
+- **B4** Watchlist XOR CHECK + 双 partial unique 防重复
+- **B5** accounts 提升 private.db Core（无 password/token）
+- **B6** positions：account_id NOT NULL FK + instrument_uid NOT NULL；OPEN unique 账户级重设计
+- **B7** event_analysis 收敛 generic（core）+ 新增 event_thesis_analysis（private）
+- **B8** alerts 移入 private.db（PRIVATE / RUNTIME USER STATE）
+- **B9** 新增 dataset_sources（PRIMARY/FALLBACK/ARCHIVE）；data_sources.priority 弃用 canonical 含义
+- **B10** 新增 event_entities / event_instruments（role 枚举）；events 去单一主体列
+- **B11** 新增 event_evidence（多源证据，content_hash 去重，is_primary 单主）
+- **B12** raw_artifacts 从 Deferred 提升 R1 Core
+- **B13** market_prices_daily + ingest_run_id（必填）+ raw_artifact_id（可选）血缘
+- **B14** legacy 双完整性：normalized canonical completeness + raw provenance completeness；备份注册 raw_artifact + SHA-256；pre_close/change/pct_chg 不迁移但 raw 可追溯
+
+### Files Created
+
+- `docs/database/core_domain_model_v2_freeze_candidate.md`
+- `docs/database/database_schema_design_v2_freeze_candidate.md`
+- `docs/database/data_dictionary_v2_freeze_candidate.md`
+- `docs/database/storage_architecture_v2_freeze_candidate.md`
+- `docs/database/daily_bars_migration_plan_v2_freeze_candidate.md`
+- `docs/database/r1a1_schema_review_v2.md`（21 项审查，Blocking findings remaining = 0）
+- `docs/database/database_design_decisions_v1.md`（DB-D001–D015）
+- `docs/prototypes/dividend_dashboard_status_v1.md`
+
+### Files Modified
+
+- `PROJECT_STATUS.md` — 状态更新：R1A v2 Freeze Candidate 待审查；Existing Prototype 记录；Next = Berlin review；Not Authorized = R1B
+- `PROJECT_PROGRESS_LOG.md` — 本记录（append-only）
+
+### Not Done（明确）
+
+- ❌ 未开始 R1B
+- ❌ 未创建 core.db / private.db
+- ❌ 未迁移 5,540 条 daily_bars
+- ❌ 未修改生产行情 pipeline（fetch_daily.py）
+- ❌ 未下载真实 stock_basic
+- ❌ 未接 FMP / SEC / OpenBB，未安装任何第三方依赖/Skill
+- ❌ 未删除 / 未移动 / 未扩展 dashboard prototype
+- ❌ 未删除 Test1（建议后续独立 cleanup 任务处理）
+- ❌ 未读取 / 未提交 API.txt（`git check-ignore` 确认忽略）
+
+### Next Step
+
+- **Berlin Review of R1A v2 Freeze Candidate**；批准后标记 Frozen 并授权 R1B — SQL DDL & Migration Specification（不自动开始）。

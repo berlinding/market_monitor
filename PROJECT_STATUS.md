@@ -2,7 +2,7 @@
 
 ## Current Snapshot
 
-Current Stage: R1 — Core Data Model: In Progress (R1A 已完成)
+Current Stage: R1 — Core Data Model
 System Status: Development
 Production Monitoring: NOT ENABLED
 Automated Trading: DISABLED
@@ -23,16 +23,39 @@ R9 — Quant Layer
 ## Completed
 
 - R0 — Project Governance & Architecture（2026-08-17）
-- R1A — Core Domain Model & Data Contract（2026-08-17，设计冻结，未实施）
+- R1A v1 — Core Domain Model & Data Contract（2026-08-17，设计未实施）
+- Credential Security（2026-08-17，API.txt 保密规则）
+- R1A.1 — Recovery, Repository Reconciliation & Schema Freeze Candidate（2026-08-22）
 
 ## Current
 
-- R1A 设计完成：docs/database/ 六份文档（domain model / schema design / data dictionary / storage architecture / migration plan / schema review）
+- **R1A v2 Freeze Candidate 待 Berlin 审查**：docs/database/ 下 7 份文档
+  - core_domain_model_v2_freeze_candidate.md
+  - database_schema_design_v2_freeze_candidate.md
+  - data_dictionary_v2_freeze_candidate.md
+  - storage_architecture_v2_freeze_candidate.md
+  - daily_bars_migration_plan_v2_freeze_candidate.md
+  - r1a1_schema_review_v2.md（Blocking findings = 0）
+  - database_design_decisions_v1.md（DB-D001–D015）
 - 无进行中的实施工作；未创建任何新数据库，未迁移数据
+
+## Existing Prototype
+
+- **Dividend / Quality Dashboard**（港股高股息/质量筛选面板：`index.html` + `chart.umd.min.js` + `data/dashboard_data.js`）
+- Status: **Prototype, not integrated with canonical DB**（未接入 core.db/private.db）
+- 治理记录：`docs/prototypes/dividend_dashboard_status_v1.md`；决策：DB-D015
+- 本轮不删除、不扩展、不迁移；根目录结构问题后续独立任务处理
 
 ## Next
 
-- R1B — SQL DDL & Migration Specification（不自动开始，待 Berlin 授权）
+- **Berlin reviews the R1A v2 Freeze Candidate**。若批准：状态更新为 Frozen，然后授权 R1B — SQL DDL & Migration Specification。
+- 不自动开始 R1B。
+
+## Not Authorized
+
+- R1B（SQL DDL & Migration）
+- 任何数据库实施 / 数据迁移
+- Dashboard 继续开发
 
 ## Active Components
 
@@ -49,36 +72,34 @@ R9 — Quant Layer
 
 ## Data Status
 
-- `data/market.db`：A股日线（`daily_bars` 5540 条 + `fetch_log`）—— 未改动，legacy 保留
+- `data/market.db`：A股日线（`daily_bars` 5540 条 + `fetch_log`）—— 未改动，legacy 保留（2026-08-22 复核）
 - 最近一次抓取：2026-08-16
 - canonical 设计目标：`data/runtime/core.db`（public）+ `data/private/private.db`（private），R1B 实施
 
 ## Runtime Status
 
 - 开发阶段，无生产监控，无自动交易
+- ⚠️ cron `market-monitor-daily-download` 最近一次运行失败（模型连接超时，2026-08-21 前后），下次运行 2026-08-24 07:10（约）
 
 ## Current Blockers
 
-无阻塞性 blocker。待 Berlin 决策的设计开放问题（不阻塞 R1B 启动）：
+无阻塞性 blocker。待 Berlin 决策的开放问题（不阻塞审查）：
 
 1. sector/industry 是否 R1 就需要（否则 R2 建 entity_classifications）
-2. positions 是否多账户（R1 按单账户 + account_ref 设计）
-3. watchlist 是否需要 entity 级条目（R1 已留 entity_id 可选列）
-4. market_prices_daily 的 upsert 策略（R1 受控 upsert；若需严格版本化则加 price_revisions）
+2. financial_reports/financial_facts 是否随 FMP/SEC 接入提前升级（当前 Deferred）
+3. market_prices_daily upsert 策略：受控 upsert vs 严格版本化（raw_artifacts 已 Core，可支撑 price_revisions）
+4. event_evidence 同源多版本证据是否需要 version 列（R1B 决策点）
 
-## Key Decisions
+## Key Decisions（2026-08-22 R1A.1 增量）
 
-- 2026-08-17：建立三层信息体系（Governance / Runtime / Application Data）
-- 2026-08-17：Python 负责确定性流程，LLM 负责理解与判断
-- 2026-08-17：运行数据库（`*.db`）不入 Git，本地保留
-- 2026-08-17：Entity / Instrument 双层身份模型正式采用；identifiers 独立成表
-- 2026-08-17：core.db + private.db 物理分库；跨库引用式关联 + ATTACH 只读 join
-- 2026-08-17：SQLite 为 operational DB（R1 唯一实施）；Parquet/DuckDB 延后
-- 2026-08-17：positions = snapshot state；transactions = 未来 canonical ledger（Deferred）
-- 2026-08-17：financial facts 采用 long-form 基础模型（Deferred）
-- 2026-08-17：events 与 event_analysis 严格分离（事实 vs LLM 判断）
-- 2026-08-17：ID 统一 integer surrogate + 业务唯一键；schema migration 用手写 SQL + stdlib runner
+- 跨库引用一律使用 `*_uid`（UUIDv4）；INTEGER PK 仅作单库 surrogate（DB-D003）
+- Entity 标识（LEI/SEC_CIK）与 Instrument 标识（ticker/ISIN/FIGI/CUSIP）严格分属（DB-D002）
+- accounts 提升 Core；positions 账户级 OPEN 唯一（DB-D006/D007）
+- generic analysis（core）与 private thesis analysis（private）分离；alerts 移入 private（DB-D008/D011）
+- dataset_sources 定义 per-dataset 源优先级；data_sources.priority 弃用（DB-D009）
+- raw_artifacts 提升 Core；行情带 ingest_run_id 血缘（DB-D012）
+- legacy 双完整性定义：normalized completeness + raw provenance completeness（B14）
 
 ## Next Authorized Step
 
-- R1B — SQL DDL & Migration Specification（待 Berlin 授权后执行）
+- Berlin 审查 R1A v2 Freeze Candidate → 批准后 Frozen → 授权 R1B
