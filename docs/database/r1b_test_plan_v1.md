@@ -33,7 +33,7 @@
 
 ---
 
-## 3. T2 — Schema Constraint Tests（15 个案例）
+## 3. T2 — Schema Constraint Tests（15 + 2 个案例）
 
 在临时库中逐项验证（每条：前置数据 → 操作 → 预期结果）：
 
@@ -55,6 +55,13 @@
 | 14 | 无效 core uid（不存在）经应用 validator | 拒绝（CrossDbReferenceError） |
 | 15 | event_analysis 不含 thesis_id / portfolio 字段（schema 层面） | 通过（列集合断言） |
 
+### 3.1 R1B.1 增量用例（S3，T-EVIDENCE）
+
+| # | 案例 | 预期 |
+|---|------|------|
+| 16 | 同一 event_id + 相同 evidence_key（如 `native:12345`），**不同 source_id**（HKEX vs Reuters） | 两条都成功（source-safe unique，DB-D036） |
+| 17 | 同一 event_id + source_id + evidence_key 重复插入 | 第二条 rejected（UNIQUE(event_id, source_id, evidence_key)） |
+
 ---
 
 ## 4. T3 — Migration Runner Tests
@@ -68,7 +75,14 @@
 7. **backup gate**：无有效备份时拒绝执行；
 8. **迁移目录命名**：非法文件名（缺前缀/序号非数字）→ 报错。
 
----
+### 4.1 Transaction Atomicity Tests（S1 新增，对应 §4.2.1 契约）
+
+- **T-RUNNER-ATOMIC-01**：migration 脚本 = `CREATE TABLE test_a...; CREATE TABLE test_b...; INVALID SQL`（第三条故意失败）。
+  预期：0 partial tables（test_a/test_b 均不存在）+ schema_migrations 无记录（整个事务回滚）。
+- **T-RUNNER-ATOMIC-02**：DDL 全部成功，但模拟 migration-record INSERT 失败（如触发 CHECK 违例/注入异常）。
+  预期：migration DDL 全部 rollback（表不存在）+ schema_migrations 无记录。
+- **T-RUNNER-ATOMIC-03**：正常 migration（DDL 成功 + record 写入成功）。
+  预期：DDL 存在 + migration record 存在 + checksum 正确。
 
 ## 5. T4 — Cross-db UID Tests
 
@@ -82,12 +96,12 @@
 
 ---
 
-## 6. T5 — Legacy Migration Tests
+## 6. T5 — Legacy Migration Tests（含 R1B.1 增量用例）
 
 基于 M0–M9 规格，用**测试夹具**（构造小型 legacy market.db 副本，含已知 3 天数据）：
 
 1. M0 preflight 全项通过（含 sha256 记录）；
-2. M1 备份生成 + raw_artifact 登记 + hash 一致；
+2. M1 备份生成 + raw_artifact 登记 + 校验（Type B：integrity + row/aggregate）；
 3. M2 bootstrap 幂等；
 4. M3 entity/instrument 建立、uid 为随机 UUIDv4（断言非 hash(ts_code)）；
 5. M4 映射完整性：无未映射 ts_code；
@@ -99,7 +113,16 @@
 11. M9 退休门 6 条件 + Berlin 批准才可停止 legacy write；market.db 删除须另行授权；
 12. 迁移可逆：按 ingest_run_id 删除 canonical 行 + 重放演练（rollback tested）。
 
----
+### 6.1 R1B.1 增量用例（S2/S4/S5）
+
+- **T-TIMEZONE-01**：输入 `2026-08-16T23:39:29`，timezone=Asia/Shanghai（CONFIRMED）。
+  预期输出：`2026-08-16T15:39:29Z`。
+- **T-TIMEZONE-02**：timezone 无法确定（UNRESOLVED）。
+  预期：**ABORT**；不得输出带 Z 的时间；`legacy_fetched_at_raw` 保留。
+- **T-MAPPING-01**：legacy 5,546 个 ts_code 只 mapping 出 5,545 个 instrument。
+  预期：**ABORT BEFORE BAR COPY**（strict gate，V3 失败）。
+- **T-BACKUP-01**：logical backup 字节 hash 与源不同，但 integrity_check + schema + row count + trade_date distribution + distinct ts_code + aggregate 全部一致。
+  预期：**BACKUP VALID**（Type B 语义；backup_artifact_hash = 备份文件自身 hash）。
 
 ## 7. T6 — Privacy Tests
 

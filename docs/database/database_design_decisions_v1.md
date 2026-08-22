@@ -274,3 +274,53 @@
 - **Consequences**: 即使停止，legacy raw snapshot 永久保留；原 market.db 删除须另行授权。
 - **Files**: `legacy_daily_bars_migration_spec_v1.md` §11/§12
 - **Date**: 2026-08-22
+
+## DB-D034 — Migration transaction atomicity（R1B.1，S1）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: migration 事务契约——`BEGIN IMMEDIATE;` 作为 executescript 脚本前缀进入同一脚本；migration 文件本身**不含 COMMIT**（C0001/P0001 已复核）；DDL 成功后事务保持 open；schema_migrations record 用 parameterized `execute()` 在**同一事务**写入；应用层 `conn.commit()` 为唯一提交点；任何异常 `conn.rollback()`，回滚后验证无 record、无部分 schema。
+- **Alternatives**: 简单 `conn.execute("BEGIN") + executescript` 不成立（executescript 自带隐式提交语义）；文件内写 COMMIT 会导致 DDL 中途提交、record 脱离事务。
+- **Rationale**: Python stdlib sqlite3.executescript() 的事务行为必须被显式控制，不能假定自动原子。
+- **Consequences**: runner 实现必须遵循 §4.2.1 契约；测试 T-RUNNER-ATOMIC-01/02/03 验证。
+- **Affected Files**: `migration_runner_spec_v1.md` §4.2.1/§4.3
+- **Date**: 2026-08-22
+
+## DB-D035 — Legacy timestamp timezone conversion（R1B.1，S2）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: legacy `fetch_log.fetched_at` 由 `fetch_daily.py` 的 `datetime.now().isoformat(timespec="seconds")` 生成 = **naive local time，非 UTC**；严禁直接加 Z。规则：原始值 `legacy_fetched_at_raw` 永久保留；R1C 前必须 CONFIRMED legacy host timezone（交叉验证系统配置/日志/Git-cron 时间/Berlin 已知时区）；确认 Asia/Shanghai 则 `2026-08-16T23:39:29` → `2026-08-16T15:39:29Z`；无法证明 → `timestamp_resolution_status=UNRESOLVED`，**暂停 ingest_run 转换并等待 Berlin 决定**（migration abort/gate 条件）。
+- **Alternatives**: 直接把 naive 时间当 UTC（拒绝——伪造时区）；假定当前机器时区等于历史时区（拒绝——不可靠）。
+- **Rationale**: 时区错误会导致 ingest_run 时间错位，破坏 lineage 审计。
+- **Consequences**: M5/M7-V9 增加时区状态检查；abort 条件新增 #10。
+- **Affected Files**: `legacy_daily_bars_migration_spec_v1.md` §7.1/§9/§10
+- **Date**: 2026-08-22
+
+## DB-D036 — Source-safe event evidence uniqueness（R1B.1，S3；extends DB-D032）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: `event_evidence` 业务唯一键从 `UNIQUE(event_id, evidence_key)` 改为 **`UNIQUE(event_id, source_id, evidence_key)`**；`content_hash` 保持 INDEX（不 UNIQUE）。evidence_key 只需在**单个 source namespace 内**稳定确定（生成顺序不变：provider native ID → normalized URL/ref → artifact_uid → content-derived fallback）；不强制 `source_code:evidence_key` 前缀（source_id 已进入唯一键，避免 namespace 重复编码）。
+- **Alternatives**: `UNIQUE(event_id, evidence_key)`（拒绝——不同 source 的相同 native ID 会 namespace collision）；`evidence_key = source_code:...` 拼接（拒绝——冗余编码）。
+- **Rationale**: HKEX native:12345 与 Reuters native:12345 在同一 event 下必须共存；同 (event_id, source_id, evidence_key) 重复应拒绝。
+- **Consequences**: C0001（canonical）+ core_schema_v1.sql（snapshot）同步修改；测试 T-EVIDENCE-01/02。
+- **Affected Files**: `sql/migrations/core/C0001_initial_core_schema.sql`；`sql/core_schema_v1.sql`
+- **Date**: 2026-08-22
+
+## DB-D037 — Strict migration mapping gate（R1B.1，S4）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: 第一次 canonical migration 要求 **100% instrument mapping**：legacy distinct ts_code（当前 5,546）== mapped instrument count 完全一致，才允许进入 M5/M6。stock_basic missing / duplicate mapping / ambiguous mapping / unknown exchange → **ABORT BEFORE BAR COPY**（data_gaps 只记录诊断，不代表可带未映射 instrument 继续）。交易所 suffix 支持：legacy 实际出现 `.SH/.SZ/.BJ`（北交所存在），M0 必须枚举实际 suffix 并校验 deterministic MIC mapping（XSHG/XSHE/XBSE），未知 suffix → ABORT。
+- **Alternatives**: “缺失公司 → data_gaps，不阻塞迁移”（拒绝——与 abort 规则冲突，且 canonical 完整性要求 100% 映射）。
+- **Rationale**: 统一 M3/M4/Abort 两套矛盾规则；首迁必须完整，缺失映射会在 canonical 留下孤儿/缺口。
+- **Consequences**: M3/M4/M7-V3/abort #1/#9 更新；测试 T-MAPPING-01。
+- **Affected Files**: `legacy_daily_bars_migration_spec_v1.md` §5/§6/§9/§10
+- **Date**: 2026-08-22
+
+## DB-D038 — Logical SQLite backup validation（R1B.1，S5）
+
+- **Status**: Adopted（2026-08-22）
+- **Decision**: 区分两种备份类型——**Type A（byte-for-byte frozen copy）**：仅当 legacy writer 已停止且 WAL 已安全处理才要求 `source_sha256 == backup_sha256`；**Type B（SQLite logical backup，`sqlite3.Connection.backup()`，默认采用）**：分别记录 `source_file_hash` 与 `backup_file_hash`，不要求相等；Type B 验证 = `PRAGMA integrity_check==ok` + schema equality + row count equality + trade_date distribution equality + distinct ts_code equality + SUM/aggregate reconciliation。raw_artifact 的 `content_hash` = **backup artifact 文件自己的 SHA-256**（不是 source file hash）；migration report 记录 legacy_source_hash / backup_artifact_hash / backup_method / backup_validation_result。M1 backup gate：backup created + integrity PASS + logical reconciliation PASS + hash recorded，否则 ABORT。
+- **Alternatives**: 要求 logical backup 字节与源相同（拒绝——过强且错误，SQLite 逻辑备份字节不必相同）。
+- **Rationale**: provenance 更清晰：备份产物自己的 hash 才是其永久身份。
+- **Consequences**: M1 重写（Type A/B、gate）、M7-V10、M9 gate 更新；测试 T-BACKUP-01。
+- **Affected Files**: `legacy_daily_bars_migration_spec_v1.md` §3/§9/§12
+- **Date**: 2026-08-22

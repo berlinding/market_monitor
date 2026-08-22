@@ -186,3 +186,74 @@
 1. B11 — 跨库 uid 引用一致性依赖应用层 validator + 定期孤儿检查（R2 自动化后降为低）；
 2. B13 — 迁移执行纪律依赖 R1C 实现完整（M0–M9 + V1–V12）；
 3. B8 — JSON 校验在应用层，schema 不感知非法 JSON（写入时拦截）。
+
+---
+
+# R1B.1 Implementation Safety Review Addendum（2026-08-22）
+
+> R1B.1 对实施安全问题的专项复查（S1–S6）。格式同前：Finding / Severity / Affected / Problem / Resolution / Residual Risk / Blocking?
+
+### B19. executescript transaction semantics（S1）
+
+- **Severity**: HIGH — 已解决
+- **Affected**: `migration_runner_spec_v1.md` §4.2
+- **Problem**: 原规格“BEGIN + executescript + 自动 atomic”不可靠——`sqlite3.executescript()` 会在执行前隐式提交 pending transaction，且不保证脚本原子。
+- **Resolution**: 重写为 §4.2.1 Transaction Execution Contract：`BEGIN IMMEDIATE;` 作为 executescript 脚本前缀；migration 文件不含 COMMIT（已复核 C0001/P0001）；DDL 后事务保持 open；record 用 parameterized `execute()` 同事务写入；应用层 `conn.commit()` 唯一提交点；异常 `conn.rollback()`。
+- **Residual risk**: 低（实现遵循契约；测试 T-RUNNER-ATOMIC-01/02/03 验证）。
+- **Blocking?**: No
+
+### B20. Migration-record atomicity（S1）
+
+- **Severity**: HIGH — 已解决
+- **Affected**: `migration_runner_spec_v1.md` §4.2.1
+- **Problem**: record 与 DDL 可能脱离同一事务（record 已写但 DDL 部分失败，或 DDL 成功但 record 未写）。
+- **Resolution**: record INSERT 与 DDL 在同一事务（BEGIN IMMEDIATE + DDL + parameterized INSERT + COMMIT）；failure 后验证 schema_migrations 无记录且 sqlite_master 无该 migration 对象。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### B21. Legacy naive timezone correctness（S2）
+
+- **Severity**: HIGH — 已解决
+- **Affected**: `legacy_daily_bars_migration_spec_v1.md` §7.1；`fetch_daily.py`（只读）
+- **Problem**: `fetch_log.fetched_at` 由 `datetime.now().isoformat(timespec="seconds")` 生成 = naive local time；若直接加 Z 会伪造 UTC。
+- **Resolution**: 明确 legacy timestamp = naive local；原始值永久保留（legacy_fetched_at_raw）；R1C 前必须 CONFIRMED 时区（交叉验证）；Asia/Shanghai 则正确转换（-8h）；UNRESOLVED → 暂停 ingest_run 转换并等待 Berlin（abort/gate）。
+- **Residual risk**: 低（依赖 R1C 执行前完成时区确认）。
+- **Blocking?**: No
+
+### B22. Evidence source namespace collision（S3）
+
+- **Severity**: HIGH — 已解决
+- **Affected**: `event_evidence`（C0001 + core_schema_v1.sql）
+- **Problem**: `UNIQUE(event_id, evidence_key)` 会使不同 source 的相同 provider native ID（HKEX 12345 vs Reuters 12345）冲突。
+- **Resolution**: 改为 `UNIQUE(event_id, source_id, evidence_key)`（DB-D036）；evidence_key 只需 source namespace 内稳定；不强制 source_code 前缀；content_hash 保持 INDEX。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### B23. Stock_basic mapping policy consistency（S4）
+
+- **Severity**: HIGH — 已解决
+- **Affected**: `legacy_daily_bars_migration_spec_v1.md` §5/§6/§10
+- **Problem**: M3“缺失可 data_gaps 不阻塞”与 M4/Abort“无法 mapping → ABORT”冲突。
+- **Resolution**: 统一 strict mapping gate——legacy distinct ts_code（5,546）== mapped count 100% 才进 M5/M6；data_gaps 仅诊断；缺失/重复/歧义/未知 exchange → ABORT BEFORE BAR COPY；legacy 实际 suffix = SH/SZ/BJ（北交所）全部纳入 deterministic MIC mapping。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### B24. SQLite backup logical equivalence（S5）
+
+- **Severity**: MEDIUM — 已解决
+- **Affected**: `legacy_daily_bars_migration_spec_v1.md` §3
+- **Problem**: 原要求“source market.db SHA == backup SHA”过强且对 logical backup 不成立（字节不必相同）。
+- **Resolution**: 区分 Type A（byte copy，要求 hash 相等）/ Type B（`sqlite3.Connection.backup()`，默认）；Type B 验证 = integrity_check + schema/row/trade_date/distinct ts_code/aggregate equality；raw_artifact content_hash = **backup 文件自身 hash**；migration report 记录 source_hash/backup_hash/method/validation_result。
+- **Residual risk**: 低。
+- **Blocking?**: No
+
+### R1B.1 汇总
+
+| Severity | 数量 | 状态 |
+|----------|------|------|
+| HIGH | 4（B19 B20 B21 B22 B23 中计 4 项） | 已解决 |
+| MEDIUM | 2（B24 + 计数修正） | 已解决 |
+
+**Blocking findings remaining = 0**
+
+**R1B.1 = READY FOR BERLIN REVIEW**（仍不是 R1C STARTED；无 SQL 执行、无建库、legacy 未动）

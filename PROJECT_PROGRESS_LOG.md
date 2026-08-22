@@ -403,3 +403,50 @@ Berlin 批准 **R1A v2 = FROZEN**（2026-08-22）并授权 R1B：将冻结设计
 ### Next
 
 - **Berlin review of R1B SQL DDL and Migration Specification**；批准后 R1C — Database Implementation & Legacy Migration Dry Run（不自动开始）。
+
+---
+
+## 2026-08-22 — R1B.1 Implementation Safety Corrections
+
+### Task
+
+修正 R1C 前剩余的工程实施安全问题（S1–S6）。**只修实施安全，不扩大 scope，不执行任何 SQL。**
+
+### Corrections（S1–S6）
+
+- **S1 Migration transaction atomicity**：重写 runner 事务契约（migration_runner_spec §4.2.1）：`BEGIN IMMEDIATE;` 作为 executescript 脚本前缀；migration 文件不含 COMMIT（C0001/P0001 已复核）；record 用 parameterized execute() 同事务写；应用层 commit 唯一提交点；异常 rollback 后验证无 record、无部分 schema。（DB-D034）
+- **S2 Legacy timestamp timezone**：确认 `fetch_daily.py:165` 用 `datetime.now().isoformat(timespec="seconds")` → fetched_at 是 **naive local time 非 UTC**；严禁直接加 Z。新规：原始值 legacy_fetched_at_raw 永久保留；R1C 前必须 CONFIRMED 时区；Asia/Shanghai 则正确转换（-8h）；UNRESOLVED → 暂停 ingest_run 转换等待 Berlin（abort/gate #10）。（DB-D035）
+- **S3 Event evidence source-safe uniqueness**：`UNIQUE(event_id, evidence_key)` → **`UNIQUE(event_id, source_id, evidence_key)`**（HKEX native:12345 与 Reuters native:12345 可共存）；evidence_key 仅需 source namespace 内稳定；不强制 source_code 前缀；content_hash 保持 INDEX。（DB-D036，extends DB-D032）
+- **S4 Strict mapping gate**：统一 M3/M4/Abort 矛盾规则 → **100% instrument mapping required**（legacy distinct ts_code 5,546 == mapped count）；data_gaps 仅诊断；缺失/重复/歧义/未知 exchange → ABORT BEFORE BAR COPY；**legacy 实际 suffix = SH/SZ/BJ（北交所）**，全部纳入 deterministic MIC mapping（XSHG/XSHE/XBSE）。（DB-D037）
+- **S5 Backup validation**：区分 Type A（byte copy，hash 相等）与 Type B（logical backup，默认；integrity_check + schema/row/trade_date/distinct ts_code/aggregate equality）；raw_artifact content_hash = **backup 文件自身 hash**；migration report 记录 source_hash/backup_hash/method/validation_result；M1 backup gate 4 条件。（DB-D038）
+- **S6 Governance reconciliation**：PROJECT_STATUS 清除已解决开放问题（upsert → DB-D031；evidence version → DB-D032/D036），新增时区确认开放项；R1B.1 完成后 Blocking findings = 0 → No R1C blocker。
+
+### SQL Changes
+
+- `docs/database/sql/migrations/core/C0001_initial_core_schema.sql`：event_evidence 唯一键改 `UNIQUE(event_id, source_id, evidence_key)`（**C0001 尚未实际执行，允许在 R1C 前修正 canonical initial migration**；一旦 applied 不得再改，之后 schema 变更必须 C0002）。
+- `docs/database/sql/core_schema_v1.sql`：review snapshot 同步。
+
+### Files Modified
+
+- `docs/database/migration_runner_spec_v1.md`（S1：§4.2.1 事务契约 + §4.3 文件要求；小节编号 4.4–4.8 修正）
+- `docs/database/legacy_daily_bars_migration_spec_v1.md`（S2 §7.1 时区策略；S4 §5/§6 strict gate + suffix；S5 §3 backup 语义；V1–V12/abort/retirement 同步）
+- `docs/database/r1b_ddl_review_v1.md`（追加 R1B.1 Addendum B19–B24；Blocking findings = 0）
+- `docs/database/r1b_test_plan_v1.md`（新增 T-RUNNER-ATOMIC-01/02/03、T-TIMEZONE-01/02、T-EVIDENCE-01/02、T-MAPPING-01、T-BACKUP-01）
+- `docs/database/database_design_decisions_v1.md`（追加 DB-D034–D038）
+- `docs/database/sql/migrations/core/C0001_initial_core_schema.sql`、`docs/database/sql/core_schema_v1.sql`（S3 unique 修正）
+- `PROJECT_STATUS.md`（R1B.1 完成状态 + blockers 更新）
+
+### Not Done
+
+- ❌ 未建库（core.db/private.db 未创建）
+- ❌ 未执行 migration（C0001/P0001 未运行）
+- ❌ 未迁移 daily_bars（16,620 行保留）
+- ❌ 未下载 stock_basic；未接 provider
+- ❌ 未修改 fetch_daily.py 生产行为；未启用 dual-write
+- ❌ 未实现/未运行 migration runner
+- ❌ 未运行任何测试（测试规范已写入，执行属 R1C 第一阶段）
+- ❌ 未 force push
+
+### Next
+
+- **Berlin final R1B/R1B.1 review**；批准后 R1C — Database Implementation & Legacy Migration Dry Run（第一阶段：temp DB → C0001/P0001 → constraint tests → runner tests → legacy dry run；不直接迁移生产数据）。

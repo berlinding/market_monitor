@@ -66,18 +66,54 @@ fetch_log(trade_date, fetched_at, rows, note)
 
 ---
 
-## 3. M1 — Backup & Raw Artifact Registration
+## 3. M1 — Backup & Raw Artifact Registration（S5 修正：区分两种备份类型）
 
-1. 用 **SQLite backup API**（`sqlite3.Connection.backup()`）或一致性快照生成：
-   `data/raw/legacy/market_20260822_<hash8>.db`
-   （目录不存在则创建；gitignore 已覆盖 `data/raw/`）
-   - 不依赖 `cp` 正在写入中的 SQLite 文件（一致性风险）。
-2. 计算备份文件 SHA-256，与 preflight 记录比对（应一致）。
-3. core.db 登记 raw_artifact（M2 后执行，因需 dataset/source id）：
-   - `artifact_type='DB_SNAPSHOT'`，`dataset_id=CN_EQUITY_DAILY`，`source_id=TUSHARE`，
-     `run_id=NULL`（手工登记），`local_path_or_reference=data/raw/legacy/market_20260822_<hash8>.db`，
-     `content_hash=SHA-256`，`retrieved_at=<now UTC>`。
-4. 备份与 artifact 登记完成前，**不进行任何 canonical 写入**（backup gate）。
+### 3.1 备份类型判定
+
+| 类型 | 适用前提 | 要求 |
+|------|---------|------|
+| **Type A — Byte-for-byte frozen copy** | legacy writer 已停止；DB 状态稳定；WAL 已安全处理（checkpoint/无活跃事务）；使用明确文件级快照方案 | `source_sha256 == backup_sha256`（允许强校验） |
+| **Type B — SQLite logical backup** | 使用 `sqlite3.Connection.backup()`（在线安全，推荐） | **不要求**源与备份字节相同；分别记录 `source_file_hash` 与 `backup_file_hash` |
+
+**本规格默认采用 Type B（logical backup）**——避免“cp 正在写入的 SQLite 文件”的一致性风险，且逻辑备份字节不必与源相同。
+
+### 3.2 Type B 校验（替代“源 hash == 备份 hash”的过强标准）
+
+备份后对 **backup 文件**验证：
+
+1. `PRAGMA integrity_check` == ok；
+2. schema equality：表集合与列集合与源一致（`sqlite_master` 对比）；
+3. `daily_bars` row count equality == 16,620；
+4. `fetch_log` row count equality == 3；
+5. trade_date distribution equality == {20260814, 20260817, 20260820}；
+6. distinct ts_code equality == 5,546；
+7. SUM / aggregate reconciliation（SUM(close)、SUM(vol)、SUM(amount) 按 trade_date）一致。
+
+全部 PASS → backup 有效。任一 FAIL → ABORT。
+
+### 3.3 raw_artifact hash 语义（S5 修正）
+
+- **`content_hash` = 实际 backup artifact 文件自己的 SHA-256**（不是 source file hash）。
+- migration report 单独记录：
+  - `legacy_source_hash`（源文件 hash，M0 计算）
+  - `backup_artifact_hash`（备份文件 hash，即 content_hash）
+  - `backup_method`（如 `sqlite3.Connection.backup()`）
+  - `backup_validation_result`（integrity + schema + row + aggregate 各 PASS/FAIL）
+
+core.db 登记 raw_artifact（M2 后执行）：
+
+- `artifact_type='DB_SNAPSHOT'`，`dataset_id=CN_EQUITY_DAILY`，`source_id=TUSHARE`，
+  `run_id=NULL`（手工登记），`local_path_or_reference=data/raw/legacy/market_20260822_<hash8>.db`，
+  `content_hash=backup_artifact_hash`（**备份文件自己的 SHA-256**），`retrieved_at=<now UTC>`。
+
+### 3.4 Backup Gate（进入 M2/M3 前必须全部满足）
+
+- backup created ✅
+- backup integrity_check PASS ✅
+- logical reconciliation PASS ✅
+- backup hash recorded ✅
+
+任一不满足 → **ABORT**（不进入 M2）。
 
 ---
 
@@ -94,23 +130,38 @@ fetch_log(trade_date, fetched_at, rows, note)
 
 ---
 
-## 5. M3 — Entity / Instrument Bootstrap
+## 5. M3 — Entity / Instrument Bootstrap（S4 修正：strict mapping gate）
 
 **输入 artifact**：Tushare `stock_basic` 快照（ts_code, name, area, industry, list_date）。
 执行前必须先下载并存为 raw_artifact（`data/raw/stock_basic_<date>.csv` 或等价），
 登记 raw_artifact（artifact_type='FILE' / 'API_PAYLOAD'）。**迁移不直接调 API。**
 
+### 5.0 交易所 suffix 支持（S4 修正，2026-08-22 复核 legacy 实际 suffix）
+
+legacy `daily_bars` 实际出现的 ts_code suffix（只读枚举）：
+
+| suffix | 交易所 | MIC | 示例 |
+|--------|--------|-----|------|
+| `.SH` | 上海证券交易所 | `XSHG` | `600519.SH` |
+| `.SZ` | 深圳证券交易所 | `XSHE` | `000001.SZ` |
+| `.BJ` | 北京证券交易所 | `XBSE` | `83xxxx.BJ` / `43xxxx.BJ` 等 |
+
+- M0 preflight 必须**从 legacy 数据枚举全部实际 suffix**，并校验每个 suffix 都有 deterministic MIC mapping（上述表）。
+- **出现未映射 suffix → ABORT**（不得硬编码 `.SH/.SZ` 而遗漏北交所）。
+- 注意：北交所股票（`.BJ`）在 Tushare 体系中存在，mapping 不得遗漏。
+
 流程（未来执行，R1C 实现）：
 
-1. 从 stock_basic 快照读取去重 ts_code（应与 legacy distinct 5,546 匹配；差异 → data_gaps / abort 决策）；
+1. 从 stock_basic 快照读取去重 ts_code（必须与 legacy distinct 5,546 完全一致——**strict mapping gate，见 §5.0/§6**）；
 2. 每个 ts_code：
    - `entities`：canonical_name=股票名称，entity_type='COMPANY'，country_code='CN'，
      `entity_uid=uuid4()`（**不是** hash(ts_code)，永久随机身份）；
    - `instruments`：instrument_type='EQUITY'，primary_symbol=ts_code 拆出交易所符号（如 `600519`），
-     exchange_code=XSHG/XSHE，currency_code='CNY'，country_code='CN'，listing_date=list_date，
+     exchange_code=按 §5.0 suffix→MIC 映射（XSHG/XSHE/XBSE），currency_code='CNY'，country_code='CN'，listing_date=list_date，
      `instrument_uid=uuid4()`；
    - 同一公司 A+H/ADR 未来靠 entity_identifiers + manual reconciliation 合并，**不由 ts_code 直接等同**（§5.1）；
-3. 缺失/失败公司 → `data_gaps` 登记，不阻塞其余迁移（该标的行情仍迁移，entity 后补或标记）。
+3. **mapping issue（stock_basic 缺失 ts_code / duplicate mapping / ambiguous mapping / unknown exchange）→ 记录 diagnostic（可同时写 data_gap 作为诊断记录）→ ABORT migration**。
+   **data_gaps 只用于记录问题，不代表可以带着未映射 instrument 继续 M6。** 修完 mapping 后重新运行。
 
 ### 5.1 Entity 创建策略（关键）
 
@@ -127,33 +178,56 @@ fetch_log(trade_date, fetched_at, rows, note)
 - 拆出的交易所符号（`600519`）→ 同一 instrument 第二行：
   - `provider='STANDARD'`，`identifier_type='TICKER'`，`identifier='600519'`（或视 Berlin 偏好调整）
 
-> 采用 EXCHANGE_SYMBOL 理由：ts_code 是 Tushare 的交易所符号命名空间（含 `.SH/.SZ` 后缀），
+> 采用 EXCHANGE_SYMBOL 理由：ts_code 是 Tushare 的交易所符号命名空间（含 `.SH/.SZ/.BJ` 后缀），
 > 语义上属于"交易所符号"而非纯报价 ticker；TICKER 留给未来更通用的 provider 符号。
 > 迁移期对 ts_code 做 UNIQUE 校验（重复 → 报错中止，绝不静默合并）。
+> **strict mapping gate（S4）**：legacy distinct ts_code（5,546）必须 == mapped instrument count，
+> 才允许进入 M5/M6。任何 stock_basic missing / duplicate / ambiguous / unknown exchange →
+> ABORT BEFORE BAR COPY。
 
 ---
 
-## 6. M4 — Identifier Mapping
+## 6. M4 — Identifier Mapping（S4 修正：strict gate）
 
 - 建临时映射表 `_mig_ts_code_map(ts_code → instrument_id, instrument_uid)`（仅迁移期存在，完成后删除）；
 - 每行来自 M3 建立的 instrument + instrument_identifiers；
-- 无法映射的 ts_code → ABORT（§7）或进入 exception 报告（明确二选一：**本规格选择 ABORT**，迁移完整性优先）。
+- **strict mapping gate**：
+  `COUNT(DISTINCT legacy ts_code) == COUNT(_mig_ts_code_map rows)` 必须成立（当前基线 5,546 == 5,546）；
+- 任何无法映射的 ts_code → **ABORT BEFORE BAR COPY**（不允许带着未映射 instrument 继续）。
 
 ---
 
-## 7. M5 — Ingest Run Backfill
+## 7. M5 — Ingest Run Backfill（S2 修正：legacy timestamp 时区语义）
 
-legacy fetch_log 3 行 → 3 条 `ingest_runs`：
+legacy fetch_log 3 行 → 3 条 `ingest_runs`（**started_at 必须经时区转换，见 §7.1**）：
 
-| legacy fetch_log | ingest_runs |
-|------------------|-------------|
-| (20260814, fetched 2026-08-16T23:39:29, 5540) | run1: dataset=CN_EQUITY_DAILY, source=TUSHARE, trigger_type='BACKFILL', started_at=2026-08-16T23:39:29Z, status='SUCCESS', rows_loaded=5540 |
-| (20260817, fetched 2026-08-17T18:32:14, 5539) | run2: started_at=2026-08-17T18:32:14Z, rows_loaded=5539 |
-| (20260820, fetched 2026-08-20T21:55:33, 5541) | run3: started_at=2026-08-20T21:55:33Z, rows_loaded=5541 |
+| legacy fetch_log（raw） | ingest_runs（转换后） |
+|------------------------|----------------------|
+| (20260814, fetched_raw=2026-08-16T23:39:29, 5540) | run1: dataset=CN_EQUITY_DAILY, source=TUSHARE, trigger_type='BACKFILL', started_at=<见 §7.1 转换>, status='SUCCESS', rows_loaded=5540 |
+| (20260817, fetched_raw=2026-08-17T18:32:14, 5539) | run2: started_at=<见 §7.1 转换>, rows_loaded=5539 |
+| (20260820, fetched_raw=2026-08-20T21:55:33, 5541) | run3: started_at=<见 §7.1 转换>, rows_loaded=5541 |
 
 - mapping 键：`fetch_log.trade_date == daily_bars.trade_date`（直接匹配；格式统一为 YYYYMMDD）。
 - **任何 trade_date 无对应 fetch_log 行 → ABORT**（不能默默制造 run）。
 - 每行 daily_bars 的 `ingest_run_id` 由 trade_date 反查映射表。
+
+### 7.1 Legacy Timestamp Timezone Policy（S2 修正，强制）
+
+**事实**：`fetch_daily.py`（scripts/fetch_daily.py:165）用 `datetime.now().isoformat(timespec="seconds")`
+写 `fetch_log.fetched_at` → 这是 **naive local timestamp**（如 `2026-08-16T23:39:29`），**不是 UTC**。
+**严禁**直接把它标成 `...T23:39:29Z`。
+
+规则：
+
+1. **原始值永久保留**：migration report / notes 至少保留 `legacy_fetched_at_raw`（如 `2026-08-16T23:39:29`），不得丢失。
+2. **必须确定 legacy host timezone**：R1C 执行前确认 legacy market.db 写入时主机（AI 机 Windows/WSL）实际时区。
+   交叉验证来源：系统配置记录、日志时间、Git/cron 时间、fetch 日志与已知执行时间、Berlin 已知机器时区。
+3. **若能确证为 Asia/Shanghai（UTC+08:00）**：
+   `2026-08-16T23:39:29` → attach Asia/Shanghai → `2026-08-16T15:39:29Z`（正确转换）。
+4. **若无法可靠证明时区**：**不得伪造 UTC**。设 `timestamp_resolution_status = UNRESOLVED`，
+   **迁移暂停 ingest_run timestamp conversion，等待 Berlin 明确决定**——这是 migration abort/gate 条件之一。
+5. 状态记录：`timestamp_resolution_status = CONFIRMED | UNRESOLVED`；
+   CONFIRMED 时记录 `confirmed_timezone`（如 `Asia/Shanghai`）与依据。
 
 ---
 
@@ -200,14 +274,14 @@ WHERE d.trade_date = :trade_date;
 |---|--------|---------|
 | V1 | row count | `COUNT(market_prices_daily WHERE source=TUSHARE) == COUNT(daily_bars)`（16,620，以迁移时点为准） |
 | V2 | trade dates | canonical 日期集合 == legacy 日期集合（{2026-08-14, 2026-08-17, 2026-08-20}） |
-| V3 | instrument mapping completeness | 每个 legacy ts_code 有唯一 instrument_id；无未映射 |
+| V3 | instrument mapping completeness | **legacy distinct ts_code == mapped instrument count（100%，strict gate）**；无未映射 |
 | V4 | duplicate canonical keys | `UNIQUE(instrument_id, trade_date, adjustment_type, source_id)` 无冲突 |
-| V5 | OHLC equality | 逐 (ts_code, trade_date) 对比 open/high/low/close 全等（V4 抽查 100 行 + 聚合） |
+| V5 | OHLC equality | 逐 (ts_code, trade_date) 对比 open/high/low/close 全等（抽查 100 行 + 聚合） |
 | V6 | volume equality | vol == volume（SUM 按 trade_date 对比，tolerance=0） |
 | V7 | turnover equality | amount == turnover（SUM 按 trade_date 对比，tolerance=0） |
 | V8 | NULL / type validation | canonical 无新增 NULL；数值类型正确 |
-| V9 | source/run lineage | 每行 source_id=TUSHARE 且 ingest_run_id 非 NULL 且存在；raw_artifact_id 存在 |
-| V10 | raw artifact existence/hash | M1 artifact 文件存在且 SHA-256 与登记一致 |
+| V9 | source/run lineage | 每行 source_id=TUSHARE 且 ingest_run_id 非 NULL 且存在；raw_artifact_id 存在；ingest_run.started_at 时区状态为 CONFIRMED |
+| V10 | raw artifact existence/hash | M1 backup artifact 文件存在且 SHA-256 == raw_artifacts.content_hash（**backup artifact 自身 hash**） |
 | V11 | orphan instrument refs | 所有 instrument_id 存在于 instruments；entity 可空但若存在则有效 |
 | V12 | aggregate reconciliation | 按 trade_date 对比 `SUM(volume)` / `SUM(turnover)`，允许浮点 tolerance（如 1e-6 相对误差） |
 
@@ -218,14 +292,16 @@ WHERE d.trade_date = :trade_date;
 
 ## 10. Abort Conditions（任一触发 → 立即 ABORT，不"尽量迁完"）
 
-1. 任何 ts_code 无法 mapping（M4）；
+1. 任何 ts_code 无法 mapping（M4 strict gate；当前基线 5,546 必须全部映射）；
 2. row count mismatch（V1）；
 3. duplicate canonical key（V4）；
-4. hash mismatch（M1 备份 / V10）；
+4. hash mismatch（M1 backup artifact hash / V10）；
 5. OHLC / volume / turnover mismatch 超出 tolerance（V5–V7, V12）；
 6. 缺失 ingest_run（M5 / V9）；
 7. foreign key violation（SQLite 约束错误）；
-8. M0 preflight 任何一项失败。
+8. M0 preflight 任何一项失败；
+9. **unsupported ts_code suffix（未知交易所，无 deterministic MIC mapping）→ ABORT（S4）**；
+10. **legacy timestamp timezone UNRESOLVED → 暂停 ingest_run 转换，ABORT/gate（S2）**。
 
 ---
 
@@ -244,7 +320,7 @@ WHERE d.trade_date = :trade_date;
 1. Migration validation V1–V12 100% PASS；
 2. Dual-write observation 通过（≥20 trading days 且 ≥30 calendar days，取较晚者）；
 3. 无 unresolved data gaps；
-4. Raw backup verified（M1 artifact 存在且 hash 一致）；
+4. Raw backup verified（M1 backup artifact 存在且 hash == content_hash；integrity_check PASS）；
 5. Rollback tested（M6 按 run 删除 + 重放演练通过）；
 6. Berlin explicit approval。
 

@@ -377,8 +377,13 @@ CREATE TABLE event_evidence (
     is_primary      INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0,1)),
     metadata        TEXT,                         -- JSON
     created_at      TEXT    NOT NULL,
-    UNIQUE (event_id, evidence_key)               -- DB-D032（方案 B）
+    UNIQUE (event_id, source_id, evidence_key)    -- DB-D036（source-safe，S3）
 );
+-- evidence_key 生成规则（DB-D032 + DB-D036）：
+--   provider native ID → normalized URL/ref → artifact_uid → content-derived fallback
+--   （不用随机 UUID 做业务 dedup key）；evidence_key 只需在单个 source namespace 内
+--   稳定确定，不强制 source_code:evidence_key 前缀（source_id 已在唯一键内）。
+-- 同内容不同 source 可共存（F6）；内容相同性检测走 content_hash 索引
 -- evidence_key 生成规则（DB-D032）：provider native ID → normalized URL/ref
 --   → artifact_uid → content-derived fallback（不用随机 UUID 做业务 dedup key）
 -- 同内容不同 source 可共存（F6）；内容相同性检测走 content_hash 索引
