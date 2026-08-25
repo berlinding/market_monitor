@@ -247,13 +247,22 @@ class TestMigrationFilePrechecks(unittest.TestCase):
 
 class TestProductionGuard(unittest.TestCase):
     def test_production_core_path_refused(self):
+        # R2 Part A legitimately created the real production core.db; the guard
+        # test must not depend on its absence. Monkeypatch PRODUCTION_PATHS to
+        # a temp location and assert the refusal logic still fires and that the
+        # patched production path is NOT created.
         with tempfile.TemporaryDirectory() as td:
             d = tmp_migrations_dir(
                 td, "core", {"C0001_ok.sql": "CREATE TABLE t_a(id INTEGER);"}
             )
-            prod_path = PROJECT_ROOT / "data" / "runtime" / "core.db"
-            with self.assertRaises(migrate.ProductionWriteNotAuthorizedError):
-                migrate.run_migrations(prod_path, d, "C", db_label="core")
+            prod_path = Path(td) / "runtime" / "core.db"
+            patched = {
+                "core": prod_path.resolve(),
+                "private": (Path(td) / "private" / "private.db").resolve(),
+            }
+            with mock.patch.object(migrate, "PRODUCTION_PATHS", patched):
+                with self.assertRaises(migrate.ProductionWriteNotAuthorizedError):
+                    migrate.run_migrations(prod_path, d, "C", db_label="core")
             self.assertFalse(prod_path.exists(),
                              "production DB must not be created")
 
@@ -262,9 +271,14 @@ class TestProductionGuard(unittest.TestCase):
             d = tmp_migrations_dir(
                 td, "private", {"P0001_ok.sql": "CREATE TABLE t_a(id INTEGER);"}
             )
-            prod_path = PROJECT_ROOT / "data" / "private" / "private.db"
-            with self.assertRaises(migrate.ProductionWriteNotAuthorizedError):
-                migrate.run_migrations(prod_path, d, "P", db_label="private")
+            prod_path = Path(td) / "private" / "private.db"
+            patched = {
+                "core": (Path(td) / "runtime" / "core.db").resolve(),
+                "private": prod_path.resolve(),
+            }
+            with mock.patch.object(migrate, "PRODUCTION_PATHS", patched):
+                with self.assertRaises(migrate.ProductionWriteNotAuthorizedError):
+                    migrate.run_migrations(prod_path, d, "P", db_label="private")
             self.assertFalse(prod_path.exists())
 
 
@@ -410,7 +424,11 @@ class TestProductionSymlinkGuard(unittest.TestCase):
     def test_symlink_alias_to_production_refused(self):
         with tempfile.TemporaryDirectory() as td:
             alias = Path(td) / "alias.db"
-            prod = PROJECT_ROOT / "data" / "runtime" / "core.db"
+            prod = Path(td) / "runtime" / "core.db"
+            patched = {
+                "core": prod.resolve(),
+                "private": (Path(td) / "private" / "private.db").resolve(),
+            }
             try:
                 alias.symlink_to(prod)
             except (OSError, NotImplementedError) as exc:
@@ -418,8 +436,9 @@ class TestProductionSymlinkGuard(unittest.TestCase):
             d = tmp_migrations_dir(
                 td, "core", {"C0001_ok.sql": "CREATE TABLE t_a(id INTEGER);"}
             )
-            with self.assertRaises(migrate.ProductionWriteNotAuthorizedError):
-                migrate.run_migrations(alias, d, "C", db_label="core")
+            with mock.patch.object(migrate, "PRODUCTION_PATHS", patched):
+                with self.assertRaises(migrate.ProductionWriteNotAuthorizedError):
+                    migrate.run_migrations(alias, d, "C", db_label="core")
             self.assertFalse(prod.exists(), "production DB must not be created")
 
 

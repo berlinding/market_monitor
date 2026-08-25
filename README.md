@@ -16,7 +16,8 @@ Berlin 的私人市场监控与投研基础设施。当前处于 **development**
 
 - R0 Governance — COMPLETE
 - R1 Core Data Model — COMPLETE（canonical schema + migration runner + 真实数据 staging rehearsal 验证通过）
-- Next: R2 Portfolio & Watchlist + vertical-slice MVP
+- R2 Minimal Portfolio & Watchlist — FOUNDATION COMPLETE（production canonical identity DB + private portfolio DB 已初始化；能力就绪，真实持仓数据等待 Berlin 录入）
+- Next: R3 Minimal Canonical Data Pipeline + vertical-slice continuation
 - Production Monitoring：NOT ENABLED
 - 自动真实交易：DISABLED（当前不执行）
 
@@ -27,14 +28,20 @@ Berlin 的私人市场监控与投研基础设施。当前处于 **development**
 - real Tushare stock_basic ingestion artifact（CSV + provenance + SHA-256）
 - reproducible migration runner（checksum 校验 / 事务原子 / 幂等）
 - real-data staging validation（38,789 bars 全量迁移，V1–V18 + 100% row reconciliation）
+- **production canonical identity DB initialized**（data/runtime/core.db，5,548 instruments / 38,789 bars）
+- **private portfolio DB initialized**（data/private/private.db，P0001 schema）
+- **minimal account/position/watchlist service**（scripts/portfolio/ + CLI）
+- **identifier resolution**（ts_code / bare ticker / uid → stable instrument_uid / entity_uid）
+- **monitoring universe query**（OPEN positions ∪ watchlist targets，POSITION/WATCHLIST/BOTH）
 
 ## Not yet implemented
 
-- real portfolio workflow
-- production canonical daily ingestion
+- automatic broker sync
+- canonical daily production ingestion
+- real portfolio data（等待 Berlin 录入）
 - event monitoring
-- LLM event intelligence
-- Telegram alert
+- intelligence
+- Telegram
 - Daily Brief
 
 ## 高层 Roadmap

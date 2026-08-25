@@ -2,7 +2,7 @@
 
 ## Current Snapshot
 
-Current Stage: R1 — Core Data Model **COMPLETE**（R1 Finalization Gate PASS 2026-08-25）
+Current Stage: R2 — Portfolio & Watchlist（R2 Foundation COMPLETE 2026-08-25）
 System Status: Development
 Production Monitoring: NOT ENABLED
 Automated Trading: DISABLED
@@ -35,15 +35,17 @@ R9 — Quant Layer
 - **R1C Phase 1.2 — Canonical Date Contract Fix**（2026-08-22，D1–D5，99 tests OK）
 - **R1C Phase 2 — Full-Scale Real-Data Staging Rehearsal**（2026-08-25，**FINAL RESULT: PASS**：real market.db → frozen snapshot → 真实 stock_basic → staging core/private.db → 38,789 行全量迁移 → V1–V18 全 PASS + 100% full-row reconciliation 0 mismatch）
 - **R1 Finalization Gate — Clean-Commit Reproducibility Rehearsal**（2026-08-25，**FINAL RESULT: PASS**：commit `a6007b3` clean tree 上独立复现真实 staging，git_dirty=false，runner 属 HEAD，**R1 — Core Data Model: COMPLETE**）
+- **R2 Part A — Canonical Identity Activation**（2026-08-25，**PASS**：production core.db INITIALIZED 5,548 instruments / 38,789 bars；production private.db INITIALIZED schema-only；clean commit `a9af1dd` validate V1–V18 ALL PASS）
+- **R2 Part B — Minimal Portfolio & Watchlist**（2026-08-25，**PASS**：account/position/watchlist service + CLI + identity resolution + cross-db validator + monitoring universe；125 tests OK）
 
 ## Current
 
-- **R1 Finalization Gate complete — awaiting Berlin review of finalization artifacts**
-- 实现：`scripts/migrate.py`（runner）+ `scripts/db_validators.py` + `scripts/timestamp_utils.py` + `scripts/date_utils.py` + `scripts/legacy_migration_utils.py` + `scripts/phase2_staging_rehearsal.py`（含 reproducibility gate）
-- 测试：`tests/` 8 个文件，**Ran 103 tests — OK（0 failed / 0 errors / 0 skipped）**
-- Review：`docs/database/r1c_phase1_review_v1.md`（C1–C34 全 PASS）+ `docs/database/r1c_phase2_review_v1.md`（P2-1…P2-10）+ `docs/database/r1_finalization_review_v1.md`（**Blocking findings = 0**）
-- Decision Register：DB-D001–D057
-- 无进行中的实施工作；**未创建任何生产数据库，未执行真实迁移**
+- **R2 Minimal Portfolio & Watchlist Foundation COMPLETE — awaiting Berlin review + real portfolio input**
+- 实现：`scripts/portfolio/`（repository + service）+ `scripts/portfolio.py`（CLI）+ `scripts/production_init.py`（Part A）
+- 测试：`tests/` 10 个文件，**Ran 125 tests — OK（0 failed / 0 errors / 0 skipped）**
+- Review：`docs/r2/r2_minimal_review_v1.md`（**Blocking findings = 0**）+ `docs/portfolio/portfolio_decisions_v1.md`（P-D001–P-D005）
+- Decision Register：DB-D001–D057（冻结）+ P-D001–P-D005（R2）
+- **Real portfolio data: NOT POPULATED（等待 Berlin 主动录入）**
 
 ## Validation（R1C Phase 1.2）
 
@@ -58,8 +60,9 @@ R9 — Quant Layer
 
 ## Real DB
 
-- **NOT CREATED**（data/runtime/core.db / data/private/private.db 均未创建；PRODUCTION_PATHS 硬拒绝）
-- **Real Legacy Migration: NOT EXECUTED**（38,789 行全部原样保留）
+- **production `data/runtime/core.db`：INITIALIZED（2026-08-25，R2 Part A）**——C0001 + 5,548 instruments / 11,096 identifiers / 38,789 bars / 7 ingest_runs；gitignored 不入 Git
+- **production `data/private/private.db`：INITIALIZED（2026-08-25）**——P0001 schema-only，业务表为空（等待 Berlin 真实 portfolio 录入）；gitignored
+- **Real Legacy Migration（production cutover）: NOT EXECUTED**——legacy market.db 38,789 行原样保留；dual-write OFF；legacy 仍为当前运行数据源（§12/§13）
 
 ## Staging Rehearsal（R1C Phase 2，2026-08-25 run `20260825T030439Z`）
 
@@ -94,14 +97,15 @@ R9 — Quant Layer
 
 ## Next
 
-- **Berlin reviews R1 Finalization artifacts（`r1_finalization_report.json` + `r1_finalization_review_v1.md` + 103 tests）**；批准后进入 R2 Minimal Portfolio & Watchlist + vertical-slice MVP。
-- 不自动开始生产迁移（PRODUCTION_WRITES_ENABLED 保持 False）；不自动开始 R2。
+- **Berlin reviews R2 artifacts（`r2_minimal_review_v1.md` + 125 tests）→ 录入真实 portfolio（accounts/positions/watchlists）**；之后进入 R3 Minimal Canonical Data Pipeline。
+- 不自动开始 R3；不自动写真实持仓（等待 Berlin 录入）。
 
 ## Not Authorized
 
-- 生产迁移：创建 data/runtime/core.db 或 data/private/private.db / 迁移真实 daily_bars / 启用 dual-write
-- 修改 fetch_daily.py 生产行为
+- production cutover / dual-write（fetch_daily.py 保持只写 legacy）
+- 自动写真实 portfolio（accounts/positions/watchlists 数据需 Berlin 主动录入）
 - Dashboard 继续开发
+- R3 自动开始
 
 ## Active Components
 
@@ -132,7 +136,8 @@ R9 — Quant Layer
 ## Runtime Status
 
 - 开发阶段，无生产监控，无自动交易
-- legacy downloader（`fetch_daily.py`）存在且每日 cron 运行；production canonical monitoring NOT ENABLED
+- legacy downloader（`fetch_daily.py`）存在且每日 cron 运行（写 legacy market.db）；production canonical monitoring NOT ENABLED
+- production core.db = initialized canonical baseline（非 active ingestion target）
 - legacy downloader operational status（cron 健康度/缺口回补）requires separate R3 review
 
 ## Current Blockers
@@ -147,13 +152,15 @@ R9 — Quant Layer
 4. ~~event_evidence 同源多版本证据是否需要 version 列~~ —— **已解决**：DB-D032/D036 evidence_key（R1 用 evidence_key；若未来需严格同源版本历史再评估 version 列）
 5. legacy fetched_at 时区：R1C 执行前必须 CONFIRMED（Asia/Shanghai 或 Berlin 确认），否则迁移暂停（S2/DB-D035）
 
-## Key Decisions（2026-08-25 R1 Finalization 增量，详见 DB-D054–D057）
+## Key Decisions（2026-08-25 R2 增量，详见 P-D001–P-D005）
 
-- R1 real-data migration validated on clean committed code（DB-D054）
-- Reproducibility report records dirty state and runner hash（DB-D055）
-- R1 closed after real-data clean-commit validation（DB-D056）
-- Future product work proceeds via vertical slice, not further R1.x expansion（DB-D057）
+- Production instrument_uid becomes stable portfolio reference（P-D001）
+- Positions remain snapshot semantics in R2（P-D002）
+- Portfolio data lives only in private.db（P-D003）
+- R2 application layer resolves identifiers through core DB（P-D004）
+- Monitoring universe = OPEN positions ∪ watchlist targets（P-D005）
+- （DB-D001–D057 保持冻结）
 
 ## Next Authorized Step
 
-- Berlin 审查 R1 Finalization 产物（r1_finalization_report.json + r1_finalization_review_v1.md）→ 批准后 R2 Minimal Portfolio & Watchlist + vertical-slice MVP（生产迁移授权另议）
+- Berlin 审查 R2 产物（r2_minimal_review_v1.md + portfolio_decisions_v1.md + 125 tests）→ 录入真实 portfolio → R3 Minimal Canonical Data Pipeline

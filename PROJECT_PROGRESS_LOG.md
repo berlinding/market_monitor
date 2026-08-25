@@ -721,3 +721,76 @@ R1 Finalization Gate — Clean-Commit Reproducibility Rehearsal：在 clean、co
 
 - **R2 Minimal Portfolio & Watchlist + Vertical Slice MVP**（等待 Berlin 批准，不自动开始）
 - 生产迁移授权另议（PRODUCTION_WRITES_ENABLED 保持 False）
+
+---
+
+## 2026-08-25 — R2 Minimal Portfolio & Watchlist + Canonical Identity Activation
+
+### Task
+
+R2 — Minimal Portfolio & Watchlist + Canonical Identity Activation：正式初始化 production
+canonical identity/database（data/runtime/core.db + data/private/private.db），并实现最小
+portfolio/watchlist 应用层（accounts/positions/watchlists/watchlist_items + identity
+resolution + cross-db validator + monitoring universe）。
+
+### Git State
+
+- 起始：branch=main，HEAD==origin/main==`7c35d92`，clean
+- commit `f6da1e1`（production_init.py + .gitignore data/runtime/）→ push
+- commit `a9af1dd`（validate reconciliation 修复）→ push；final validate run 在 clean tree 上 PASS
+
+### Part A — Canonical Identity Activation（PASS）
+
+- `scripts/production_init.py`：initialize-if-absent / validate-if-present（§30）
+  - initialize：live preflight → **新 frozen snapshot**（market_20260825T091354Z.db，sha256 ac5b2acd…）
+    → 真实 stock_basic（L 单查 5,550 条，覆盖 5,548/5,548 = 100%）→ 100% mapping →
+    production core.db（C0001 + bootstrap + entities/instruments/identifiers/ingest_runs/
+    raw_artifacts/bars）→ production private.db（P0001 schema-only）
+  - validate-if-present：DB 已存在 → 从 raw_artifacts 恢复 snapshot/manifest/mapping →
+    **重跑 V1–V18 + full-row reconciliation**（不重复 insert、不生成新 UID、不覆盖）
+- production core.db：5,548 entities / 5,548 instruments / 11,096 identifiers / 7 ingest_runs /
+  **38,789 bars**；V1–V18 ALL PASS；full-row reconciliation 0 mismatch；FK check 空
+- production private.db：P0001 APPLIED，8 表齐全，业务表为空（**未写真实 portfolio**）
+- **stable identity**：production instrument_uid/entity_uid 正式成为稳定引用（P-D001）
+- 过程发现：首次 initialize 时 production_init.py 未提交 → report git_dirty=true FAIL
+  （reproducibility gate 正确拒绝 dirty tree 宣告 PASS）；commit 后在 clean tree validate → PASS
+
+### Part B — Minimal Portfolio & Watchlist（PASS）
+
+- `scripts/portfolio/__init__.py` + `repository.py`（SQL 集中）+ `service.py`（业务规则）
+- `scripts/portfolio.py`：CLI（account/position/watchlist/resolve/universe/validate-refs）
+- Service API：create/list/get account；set/close/list/get position（snapshot 语义，controlled
+  update）；create/list watchlist、add/remove/list items（XOR）；resolve_instrument/resolve_entity
+  （ts_code / bare ticker / uid → stable uid）；validate_private_core_references（cross-db）；
+  get_monitoring_universe（OPEN positions ∪ watchlist，source=POSITION/WATCHLIST/BOTH）
+- 未知标识 fail-fast（IdentityNotFoundError，无 auto-create / placeholder / orphan）
+- production identity smoke test（只读）：600519.SH / 000001.SZ / 920000.BJ / 600036 均 exactly one
+
+### Tests
+
+- **Ran 125 tests — OK（0 failed / 0 errors / 0 skipped）**（原 103 + 新增 22 R2 tests）
+- 新增 tests/test_r2_portfolio.py：R2-ACCOUNT-01/UNIQUE-01、R2-POSITION-01/UPDATE-01/CLOSE-01/
+  IDENTITY-FAIL-01、R2-WATCHLIST-01/INSTRUMENT-01/ENTITY-01/XOR-01/DUP-01、R2-CROSSDB-01/ORPHAN-01、
+  R2-PRIVACY-01、identity resolution、universe
+- 修复：test_migration_runner 的 3 个 production guard 测试改为 monkeypatch 临时路径
+  （不再依赖 production DB 不存在，guard 逻辑不变）
+- 全部 temp DB（TemporaryDirectory），未触碰 production DB（§29）
+
+### Review / Governance
+
+- `docs/r2/r2_minimal_review_v1.md`：Blocking findings = 0
+- `docs/portfolio/portfolio_decisions_v1.md`：P-D001–P-D005（R2 独立决策登记）
+- `PROJECT_STATUS.md`：R2 Current Stage / production core+private INITIALIZED / Real Portfolio NOT POPULATED
+- `README.md`：What works today 增加 identity DB / portfolio service / resolution / universe
+- `.gitignore`：`data/runtime/` 增加（§36）
+
+### Safety
+
+- dual-write OFF（fetch_daily.py 未修改）；legacy retirement NO；production monitoring NOT ENABLED
+- production DB 不覆盖（validate-if-present）；live market.db 只读（sha256 前后一致）
+- real portfolio NOT written（等待 Berlin 录入）；token 未出现在日志/report/CLI
+
+### Next
+
+- **Berlin review R2 artifacts → 录入真实 portfolio（accounts/positions/watchlists）**
+- R3 Minimal Canonical Data Pipeline（等待批准，不自动开始）
