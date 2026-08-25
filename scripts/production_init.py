@@ -181,8 +181,12 @@ def validate_production_core(db: Path) -> dict:
             }
             checks["reconciliation"] = m7["reconciliation"]
             checks["v1_v18_all_pass"] = all(v["pass"] for v in m7["v_results"].values())
+            _mismatch_fields = (
+                "ohlc_mismatches", "volume_mismatches", "turnover_mismatches",
+                "date_mismatches", "mapping_mismatches",
+            )
             checks["reconciliation_ok"] = all(
-                v == 0 for v in m7["reconciliation"].values()
+                m7["reconciliation"][f] == 0 for f in _mismatch_fields
             )
             checks["valid"] = bool(
                 checks["valid"] and checks["v1_v18_all_pass"] and checks["reconciliation_ok"]
