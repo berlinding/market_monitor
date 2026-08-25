@@ -59,6 +59,9 @@ SNAPSHOT_DIR = PROJECT_ROOT / "data" / "raw" / "legacy"
 TUSHARE_RAW_DIR = PROJECT_ROOT / "data" / "raw" / "tushare"
 STAGING_ROOT = PROJECT_ROOT / "data" / "staging" / "r1c_phase2"
 MIGRATIONS_DIR = PROJECT_ROOT / "docs" / "database" / "sql" / "migrations"
+RUNNER_PATH = PROJECT_ROOT / "scripts" / "phase2_staging_rehearsal.py"
+C0001_PATH = MIGRATIONS_DIR / "core" / "C0001_initial_core_schema.sql"
+P0001_PATH = MIGRATIONS_DIR / "private" / "P0001_initial_private_schema.sql"
 API_TXT = Path.home() / "API.txt"
 TUSHARE_API = "http://api.tushare.pro"
 
@@ -94,6 +97,68 @@ def git_head() -> str:
     except Exception:
         pass
     return "unknown"
+
+
+def git_branch() -> str:
+    """Current branch name via `git rev-parse --abbrev-ref HEAD`."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def git_dirty() -> bool:
+    """True if the working tree has any tracked/untracked changes.
+
+    Uses `git status --porcelain` (machine-readable). Fail-closed: if git
+    cannot be queried, treat the tree as dirty (finalization must not pass
+    on an unverifiable tree).
+    """
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if out.returncode == 0:
+            return bool(out.stdout.strip())
+    except Exception:
+        pass
+    return True
+
+
+def get_git_reproducibility_state() -> dict:
+    """Git reproducibility metadata recorded in the rehearsal report (DB-D055).
+
+    Returns:
+      git_commit    : HEAD sha (short form via git rev-parse HEAD)
+      git_branch    : current branch
+      git_dirty     : working-tree dirty flag (porcelain)
+      runner_path   : repo-relative path of this runner
+      runner_sha256 : SHA-256 of EXACT raw runner file bytes (H3 contract)
+      c0001_sha256  : SHA-256 of EXACT raw C0001 migration file bytes
+      p0001_sha256  : SHA-256 of EXACT raw P0001 migration file bytes
+    """
+    return {
+        "git_commit": git_head(),
+        "git_branch": git_branch(),
+        "git_dirty": git_dirty(),
+        "runner_path": str(RUNNER_PATH.relative_to(PROJECT_ROOT)),
+        "runner_sha256": sha256_bytes(RUNNER_PATH.read_bytes()),
+        "c0001_sha256": sha256_bytes(C0001_PATH.read_bytes()),
+        "p0001_sha256": sha256_bytes(P0001_PATH.read_bytes()),
+    }
 
 
 def load_tushare_token() -> str:
@@ -1042,8 +1107,10 @@ def build_report(
         for vid, v in m7["v_results"].items()
         if not v["pass"]
     }
+    repro = get_git_reproducibility_state()
     all_pass = (
-        m0["health"]["ok"]
+        not repro["git_dirty"]
+        and m0["health"]["ok"]
         and m1["pass"]
         and m3m4["coverage"]["status"] == "PASS"
         and staging["core_checks"]["foreign_key_check_empty"]
@@ -1057,9 +1124,17 @@ def build_report(
         "run_id": run_id,
         "started_at": started_at,
         "finished_at": utc_now_iso(),
-        "git_commit": git_head(),
+        "git_commit": repro["git_commit"],
         "reproducibility": {
-            "git_commit_sha": git_head(),
+            "git_commit": repro["git_commit"],
+            "git_branch": repro["git_branch"],
+            "git_dirty": repro["git_dirty"],
+            "runner_path": repro["runner_path"],
+            "runner_sha256": repro["runner_sha256"],
+            "c0001_sha256": repro["c0001_sha256"],
+            "p0001_sha256": repro["p0001_sha256"],
+            # legacy fields (Phase 2 schema, kept for backward compat)
+            "git_commit_sha": repro["git_commit"],
             "c0001_checksum": staging["core_checksums"].get("C0001", "n/a"),
             "p0001_checksum": staging["private_checksums"].get("P0001", "n/a"),
             "legacy_snapshot_sha256": m1["snapshot_sha256"],
@@ -1122,6 +1197,14 @@ def build_report(
             for vid, v in m7["v_results"].items()
         },
         "v1_v18_errors": v_errors,
+        "safety": {
+            "production_core_exists": PRODUCTION_PATHS["core"].exists(),
+            "production_private_exists": PRODUCTION_PATHS["private"].exists(),
+            "live_db_writer_used": False,
+            "token_exposed": False,
+            "dual_write_enabled": False,
+            "fetch_daily_production_behavior_modified": False,
+        },
         "warnings": warnings,
         "final_result": "PASS" if all_pass else "FAIL",
     }
@@ -1130,9 +1213,26 @@ def build_report(
 def main() -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="R1C Phase 2 real-data staging rehearsal")
+    parser = argparse.ArgumentParser(
+        description="R1C Phase 2 / R1 Finalization real-data staging rehearsal"
+    )
     parser.add_argument("--run-id", default=None, help="UTC run id YYYYMMDDTHHMMSSZ")
+    parser.add_argument(
+        "--staging-root",
+        default="r1c_phase2",
+        help="staging workspace name under data/staging/ (default r1c_phase2; "
+        "R1 Finalization uses r1_finalization)",
+    )
+    parser.add_argument(
+        "--report-name",
+        default="migration_report.json",
+        help="report filename inside the run dir (default migration_report.json; "
+        "R1 Finalization uses r1_finalization_report.json)",
+    )
     args = parser.parse_args()
+
+    global STAGING_ROOT
+    STAGING_ROOT = PROJECT_ROOT / "data" / "staging" / args.staging_root
 
     run_id = args.run_id or utc_now_iso().replace("-", "").replace(":", "")
     started_at = utc_now_iso()
@@ -1305,7 +1405,7 @@ def main() -> int:
     )
     staging_dir = STAGING_ROOT / run_id
     staging_dir.mkdir(parents=True, exist_ok=True)
-    report_path = staging_dir / "migration_report.json"
+    report_path = staging_dir / args.report_name
     report_path.write_text(
         json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
     )
