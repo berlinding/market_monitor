@@ -2,10 +2,15 @@
 """
 timestamp_utils.py — UTC / legacy timestamp utilities (stdlib only)
 
-R1C Phase 1. Frozen contract (DB-D027): instants are TEXT UTC ISO-8601 with
+Covers R1C Phase 1 / 1.1 / 1.2 / Phase 2 helper semantics.
+
+Frozen contract (DB-D027): instants are TEXT UTC ISO-8601 with
 'Z' suffix (e.g. 2026-08-16T15:39:29Z). Legacy fetch_log.fetched_at is a
 NAIVE LOCAL timestamp (datetime.now().isoformat(timespec="seconds")) and must
 NOT be blindly relabelled as UTC (S2 / DB-D035).
+
+Phase 2 (real-data staging): legacy timezone CONFIRMED = Asia/Shanghai;
+convert_legacy_naive_to_utc() is used to backfill ingest_runs.started_at.
 """
 
 from __future__ import annotations

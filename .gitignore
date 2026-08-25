@@ -12,6 +12,9 @@ API.txt
 *.sqlite3
 *.duckdb
 
+# ===== Staging rehearsal workspaces (R1C Phase 2) =====
+data/staging/
+
 # ===== Private portfolio / trading data =====
 data/private/
 portfolio*

@@ -593,3 +593,67 @@ legacy/provider 日期是 compact `YYYYMMDD`（daily_bars.trade_date、Tushare s
 ### Next
 
 - **Berlin review for Phase 2**（不自动开始）。
+
+---
+
+## 2026-08-25 — R1C Phase 2 Real-Data Staging Rehearsal COMPLETE（FINAL RESULT: PASS）
+
+### Task
+
+完成 R1C Phase 2 — Full-Scale Real-Data Staging Rehearsal（Berlin 2026-08-22 #381–387 授权）：
+real market.db（只读）→ frozen snapshot → 真实 Tushare stock_basic → staging core/private.db →
+全量 daily_bars 迁移 → V1–V18 + 100% full-row reconciliation → migration_report.json。
+
+### Background（8-23 首轮未完成）
+
+- 8-23 首轮 rehearsal 在 M2 卡住：该 token 档位对 `stock_basic` 为**小时级滚动限频（40203）**，
+  且失败调用也会刷新窗口（09:40Z/09:49Z/10:50Z/11:05Z 连续 40203）。后台进程 `nimble-crest`
+  最终未产生任何产物（无 staging、无 report；exec session 清理后唤醒丢失）。
+- 教训已记 memory/2026-08-23.md：低积分 token 上 stock_basic 需冷却 ≥75 分钟单次尝试。
+
+### Implementation
+
+- 新增 `scripts/phase2_staging_rehearsal.py`（stdlib only，M0–M7 + build_report）：
+  - M2 限频修复：L 状态单查优先 + 覆盖率驱动补 D/P + 40203 等待 3660s 重试（最多 3 次）；
+    精简字段去掉 `is_hs`；token 程序内从 env/~/API.txt 读取，绝不落盘/回显。
+  - M3/M4 100% mapping gate（MappingGateError → diagnostics 落盘，bar 迁移不启动）。
+  - M6 按 trade_date 逐批 `BEGIN IMMEDIATE` 原子迁移；失败即停。
+  - M7 V1–V18 + full-row reconciliation；report JSON 含 reproducibility（git sha / checksums / snapshot hashes）。
+  - 硬守卫：PRODUCTION_PATHS（data/runtime/core.db、data/private/private.db）resolve 冲突即拒绝；
+    live market.db 全程只读，收尾校验 before==after hash。
+- `scripts/legacy_migration_utils.py` / `scripts/timestamp_utils.py` 文件头描述更新至 Phase 1.2/Phase 2 semantics。
+- `.gitignore` 增加 `data/staging/`（staging 产物不入库）。
+
+### Run（2026-08-25 重跑，限频已冷却 >47h）
+
+- run_id `20260825T030439Z`（03:04:39Z 启动，03:04:43Z 完成，git `be27e82`）
+- M0 PASS：live market.db = **38,789 行 / 7 交易日（08-14→08-24）/ 5,548 标的**（SH·SZ·BJ，8-24 例行下载已回补缺口）
+- M1 PASS：frozen snapshot `data/raw/legacy/market_20260825T030439Z.db`（sha256 `ac5b2acd…`，manifest 一致；8-23 旧快照保留）
+- M2 PASS：stock_basic **L 单查一次成功**（5,550 条），覆盖率 5,548/5,548 = 100%，未触发 D/P 补查
+- M3/M4 PASS：5,548 entities / 5,548 instruments / 11,096 identifiers，1:1 严格
+- Staging PASS：core.db（17 tables，C0001）+ private.db（8 tables，P0001），FK check 全空
+- M5 PASS：7 ingest_runs backfill（Asia/Shanghai 时区）
+- M6 PASS：**38,789 行 bars 全量迁移**，7/7 批次原子成功，0 失败
+- M7 PASS：**V1–V18 全部 PASS**；full-row reconciliation 38,789 行 checked，ohlc/volume/turnover/date/mapping mismatch 全 0
+- report：`data/staging/r1c_phase2/20260825T030439Z/migration_report.json`（FINAL RESULT: PASS）
+- live market.db 运行前后 sha256 一致（`7b435961…`）
+
+### Tests
+
+- **Ran 99 tests — OK（0 failed / 0 errors / 0 skipped）**（Phase 1.2 门槛复跑）
+
+### Review
+
+- `docs/database/r1c_phase2_review_v1.md`：P2-1…P2-10（8 HIGH PASS + 1 MEDIUM 已解决），**Blocking findings = 0**
+
+### Safety
+
+- 生产 DB：**NOT CREATED**（data/runtime/core.db、data/private/private.db 均不存在）
+- 真实迁移：**NOT EXECUTED**（38,789 行 legacy 原样保留）
+- live market.db：只读，sha256 before==after
+- token：未出现在日志/report/CLI；`data/raw/`、`data/staging/` 均 gitignored
+
+### Next
+
+- **Berlin review Phase 2 artifacts**（migration_report.json + r1c_phase2_review_v1.md + 99 tests）
+- 批准后决策：生产迁移授权 / R2 Portfolio & Watchlist / dual-write；不自动开始。

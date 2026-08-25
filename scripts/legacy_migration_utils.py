@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-legacy_migration_utils.py — synthetic legacy migration helpers (R1C Phase 1.1)
+legacy_migration_utils.py — legacy migration helpers (R1C Phase 1.1 → Phase 2)
 
 Implements M0–M7 of legacy_daily_bars_migration_spec_v1.md at FIXTURE level,
 operating ONLY on temp/synthetic databases (never on data/market.db).
+Phase 2 real-data rehearsal (scripts/phase2_staging_rehearsal.py) reuses the
+same helpers against the frozen snapshot + staging canonical DBs.
 
 Key invariants implemented here (P0-1/P0-2/P0-3 + H1, DB-D035/DB-D037/DB-D038):
   * live DB is used ONLY for health/readability preflight and to produce the

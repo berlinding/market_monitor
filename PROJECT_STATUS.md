@@ -33,15 +33,16 @@ R9 — Quant Layer
 - **R1C Phase 1 — Temp-DB Implementation & Validation**（2026-08-22，62 tests OK）
 - **R1C Phase 1.1 — Final Pre-Production Hardening**（2026-08-22，H1–H4，77 tests OK）
 - **R1C Phase 1.2 — Canonical Date Contract Fix**（2026-08-22，D1–D5，99 tests OK）
+- **R1C Phase 2 — Full-Scale Real-Data Staging Rehearsal**（2026-08-25，**FINAL RESULT: PASS**：real market.db → frozen snapshot → 真实 stock_basic → staging core/private.db → 38,789 行全量迁移 → V1–V18 全 PASS + 100% full-row reconciliation 0 mismatch）
 
 ## Current
 
-- **R1C Phase 1/1.1/1.2 complete — awaiting Berlin approval for Phase 2**
-- 实现：`scripts/migrate.py`（runner）+ `scripts/db_validators.py` + `scripts/timestamp_utils.py` + `scripts/date_utils.py` + `scripts/legacy_migration_utils.py`
+- **R1C Phase 2 complete — awaiting Berlin review of Phase 2 artifacts**
+- 实现：`scripts/migrate.py`（runner）+ `scripts/db_validators.py` + `scripts/timestamp_utils.py` + `scripts/date_utils.py` + `scripts/legacy_migration_utils.py` + `scripts/phase2_staging_rehearsal.py`
 - 测试：`tests/` 7 个文件，**Ran 99 tests — OK（0 failed / 0 errors / 0 skipped）**
-- Review：`docs/database/r1c_phase1_review_v1.md`（C1–C34 全 PASS，**Blocking findings = 0**）
+- Review：`docs/database/r1c_phase1_review_v1.md`（C1–C34 全 PASS）+ `docs/database/r1c_phase2_review_v1.md`（P2-1…P2-10，**Blocking findings = 0**）
 - Decision Register：DB-D001–D053
-- 无进行中的实施工作；**未创建任何真实数据库，未迁移数据**
+- 无进行中的实施工作；**未创建任何生产数据库，未执行真实迁移**
 
 ## Validation（R1C Phase 1.2）
 
@@ -56,8 +57,19 @@ R9 — Quant Layer
 
 ## Real DB
 
-- **NOT CREATED**（core.db / private.db 均未创建；PRODUCTION_WRITES_ENABLED = False 强制保护）
-- **Real Legacy Migration: NOT EXECUTED**（16,620 行全部原样保留）
+- **NOT CREATED**（data/runtime/core.db / data/private/private.db 均未创建；PRODUCTION_PATHS 硬拒绝）
+- **Real Legacy Migration: NOT EXECUTED**（38,789 行全部原样保留）
+
+## Staging Rehearsal（R1C Phase 2，2026-08-25 run `20260825T030439Z`）
+
+- **FINAL RESULT: PASS**（report：`data/staging/r1c_phase2/20260825T030439Z/migration_report.json`，gitignored）
+- 数据规模：38,789 行 / 7 交易日（08-14→08-24）/ 5,548 标的（SH·SZ·BJ）
+- frozen snapshot：`data/raw/legacy/market_20260825T030439Z.db`（sha256 `ac5b2acd…`；8-23 旧快照保留）
+- stock_basic：真实下载 5,550 条（L 单查覆盖 5,548/5,548 = 100%），CSV+meta 落盘 `data/raw/tushare/`
+- staging：core.db（17 tables，C0001）+ private.db（8 tables，P0001），FK check 全空
+- 迁移：5,548 entities / 5,548 instruments / 11,096 identifiers（1:1）、7 ingest_runs、38,789 bars 全量
+- V1–V18 全 PASS；full-row reconciliation：38,789 行 checked，0 mismatch
+- live market.db 运行前后 sha256 一致（`7b435961…`）
 
 ## Existing Prototype
 
@@ -69,14 +81,12 @@ R9 — Quant Layer
 
 ## Next
 
-- **Berlin reviews R1C Phase 1/1.1 artifacts（runner + 77 tests + review）**；批准后进入 R1C Phase 2 — Full-Scale Real-Data Staging Rehearsal（real market.db → real frozen snapshot → real stock_basic snapshot → staging core/private.db → full V1–V12 → Berlin review）。
-- 不自动开始 Phase 2。
+- **Berlin reviews R1C Phase 2 artifacts（`migration_report.json` + `r1c_phase2_review_v1.md` + 99 tests）**；批准后进入后续（生产迁移授权 / R2 Portfolio & Watchlist / dual-write 等）。
+- 不自动开始生产迁移（PRODUCTION_WRITES_ENABLED 保持 False）。
 
 ## Not Authorized
 
-- R1C Phase 2（Full-Scale Real-Data Staging Rehearsal）
-- 创建 data/runtime/core.db 或 data/private/private.db
-- 真实 backup market.db / 下载真实 stock_basic / 迁移真实 daily_bars / 启用 dual-write
+- 生产迁移：创建 data/runtime/core.db 或 data/private/private.db / 迁移真实 daily_bars / 启用 dual-write
 - 修改 fetch_daily.py 生产行为
 - Dashboard 继续开发
 
@@ -125,4 +135,4 @@ R9 — Quant Layer
 
 ## Next Authorized Step
 
-- Berlin 审查 R1C Phase 1/1.1/1.2 → 批准后 R1C Phase 2 — Full-Scale Real-Data Staging Rehearsal
+- Berlin 审查 R1C Phase 2 产物（migration_report.json + r1c_phase2_review_v1.md）→ 决定是否授权生产迁移
