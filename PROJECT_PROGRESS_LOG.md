@@ -657,3 +657,67 @@ real market.db（只读）→ frozen snapshot → 真实 Tushare stock_basic →
 
 - **Berlin review Phase 2 artifacts**（migration_report.json + r1c_phase2_review_v1.md + 99 tests）
 - 批准后决策：生产迁移授权 / R2 Portfolio & Watchlist / dual-write；不自动开始。
+
+---
+
+## 2026-08-25 — R1 Finalization Gate（R1 — Core Data Model: COMPLETE）
+
+### Task
+
+R1 Finalization Gate — Clean-Commit Reproducibility Rehearsal：在 clean、committed、可复现的 Git tree 上用已提交的 Phase 2 runner 再执行一次真实 staging rehearsal，验证可独立复现 PASS 后正式关闭 R1。
+
+### Git State
+
+- 起始：branch=main，HEAD==origin/main==`55888f9`，working tree clean（git status --porcelain 空）
+- 新增 reproducibility gate 后 commit `a6007b3`（R1 finalization add reproducibility gate）→ push → 确认 HEAD==origin/main==`a6007b3`、clean
+- Finalization run 在 clean committed tree 上执行；report 记录 git_dirty=false
+
+### Implementation
+
+- `scripts/phase2_staging_rehearsal.py`：
+  - 新增 `get_git_reproducibility_state()`：git_commit / git_branch / git_dirty（`git status --porcelain`，fail-closed）/ runner_path / runner_sha256 / c0001_sha256 / p0001_sha256（raw-byte SHA-256，H3 契约扩展）
+  - report 增加 `reproducibility` 块（含 git_dirty；git_dirty!=false → Finalization FAIL）与 `safety` 块（production core/private exists、live_db_writer_used、token_exposed、dual_write_enabled、fetch_daily 行为未改）
+  - 支持 `--staging-root` / `--report-name`（Finalization workspace = `data/staging/r1_finalization/<run_id>/r1_finalization_report.json`）
+- `tests/test_reproducibility.py`：T-REPRO-GIT-METADATA-01（helper + report schema）、T-REPRO-RUNNER-HASH-01（runner_sha256 == raw bytes）
+
+### Regression
+
+- **Ran 103 tests — OK（0 failed / 0 errors / 0 skipped）**（原 99 + 新增 4）
+
+### Finalization Run（2026-08-25 run `20260825T043812Z`）
+
+- **FINAL RESULT: PASS**（report：`data/staging/r1_finalization/20260825T043812Z/r1_finalization_report.json`）
+- Git：commit `a6007b3`，branch main，dirty=false；runner 属 HEAD（HEAD runner sha256 `d429dae7…` == report runner_sha256）
+- M0 PASS：live market.db 38,789 行 / 7 交易日 / 5,548 标的，sha256 `7b435961…`（前后一致）
+- M1 PASS：frozen snapshot `market_20260825T043812Z.db`（sha256 `ac5b2acd…`）
+- M2 PASS：stock_basic L 单查 5,550 条，覆盖 5,548/5,548 = 100%（未触发 D/P）
+- M3/M4 PASS：5,548 entities / 5,548 instruments / 11,096 identifiers，1:1
+- Staging PASS：core.db（17 tables，C0001）+ private.db（8 tables，P0001），FK 全空
+- M5 PASS：7 ingest_runs（Asia/Shanghai）
+- M6 PASS：38,789 行 bars 全量迁移，7/7 批次原子成功
+- M7 PASS：V1–V18 全 PASS；full-row reconciliation 38,789 行，0 mismatch
+- Safety：production core/private 不存在；live 只读；token 未暴露；dual-write off
+
+### Review
+
+- `docs/database/r1_finalization_review_v1.md`：**Decision: R1 COMPLETE**；Git Reproducibility / Real Inputs / Mapping / Migration / V1–V18 / Full Row Reconciliation / Safety / Governance Cleanup / Residual Risks；Blocking findings = 0
+
+### Governance Cleanup
+
+- README：Current Stage R0 → **R1 Core Data Model — COMPLETE** + What works today / Not yet implemented（§二十五）
+- PROJECT_STATUS：stale Data Status（16,620 / 3 dates / 5,546）移除 → Current Live Legacy Snapshot（38,789 / 7 / 5,548）vs Last Validated Staging Snapshot（run `20260825T043812Z`）；Runtime Status 过期 cron 时间清理（§二十六/§二十七）
+- Decision Register：DB-D054–D057 追加（§二十八）
+- 明确：**No further R1.x design phases are planned**（§二十四）
+
+### Safety
+
+- 生产 DB：NOT CREATED；真实迁移：NOT EXECUTED；live market.db 只读（sha256 before==after）；token 未出现在日志/report/CLI；staging/raw gitignored
+
+### R1 Decision
+
+- **R1 — Core Data Model: COMPLETE**（design + implementation + real-data staging + reproducibility gate 全部 validated）
+
+### Next
+
+- **R2 Minimal Portfolio & Watchlist + Vertical Slice MVP**（等待 Berlin 批准，不自动开始）
+- 生产迁移授权另议（PRODUCTION_WRITES_ENABLED 保持 False）

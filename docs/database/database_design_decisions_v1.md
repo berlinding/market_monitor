@@ -474,3 +474,43 @@
 - **Consequences**: T-MANIFEST-JSON-01（json.dumps(sort_keys=True) 成功）。
 - **Affected Files**: `scripts/legacy_migration_utils.py`；`tests/test_legacy_migration_fixture.py`
 - **Date**: 2026-08-22
+
+## DB-D054 — R1 real-data migration validated on clean committed code（R1 Finalization）
+
+- **Status**: Adopted（2026-08-25）
+- **Decision**: R1C Phase 2 的 real-data staging rehearsal（run `20260825T030439Z`）在 runner 未提交时执行（report git=`be27e82`，runner 直到 `55888f9` 才入库），因此 R1 关闭前必须在 **clean committed tree** 上以已提交 runner 独立复现一次。R1 Finalization run（`20260825T043812Z`）在 commit `a6007b3`、working tree clean、git_dirty=false 条件下重跑真实 staging，FINAL RESULT=PASS。
+- **Alternatives**: 接受 Phase 2 report 的 git SHA 作为充分证据（拒绝——无法从 report 单 SHA 精确重建当时 working-tree 中执行的 runner）。
+- **Rationale**: reproducibility gate 是 R1 closure 的前提：report 必须可复现，不能依赖"未提交代码"。
+- **Consequences**: R1 COMPLETE 判定以 Finalization run 为准；Phase 2 run 保留为过程证据。
+- **Affected Files**: `docs/database/r1_finalization_review_v1.md`；`data/staging/r1_finalization/20260825T043812Z/r1_finalization_report.json`
+- **Date**: 2026-08-25
+
+## DB-D055 — Reproducibility report records dirty state and runner hash（R1 Finalization）
+
+- **Status**: Adopted（2026-08-25）
+- **Decision**: rehearsal report 增加 `reproducibility` 块：git_commit / git_branch / git_dirty / runner_path / runner_sha256 / c0001_sha256 / p0001_sha256（均为 raw-byte SHA-256，H3 契约扩展）；新增 `safety` 块（production core/private exists、live_db_writer_used、token_exposed、dual_write_enabled、fetch_daily 行为未改）。`git_dirty != false` 直接导致 Finalization FAIL。
+- **Alternatives**: 只记录 git_commit_sha（拒绝——无法证明 runner 属 HEAD、无法证明 tree clean）。
+- **Rationale**: report 必须自证可复现（commit+branch+dirty+runner hash+migration hashes）。
+- **Consequences**: `scripts/phase2_staging_rehearsal.py` 新增 `get_git_reproducibility_state()`；测试 T-REPRO-GIT-METADATA-01 / T-REPRO-RUNNER-HASH-01。
+- **Affected Files**: `scripts/phase2_staging_rehearsal.py`；`tests/test_reproducibility.py`
+- **Date**: 2026-08-25
+
+## DB-D056 — R1 closed after real-data clean-commit validation（R1 Finalization）
+
+- **Status**: Adopted（2026-08-25）
+- **Decision**: R1 — Core Data Model **STATUS: COMPLETE**（2026-08-25，R1 Finalization Gate PASS）。R1 design validated（R1A v2 FROZEN + R1B spec + Phase 0/1/1.1/1.2）、implementation validated（103 tests）、real-data staging validated（Phase 2 + Finalization 均 PASS）、reproducibility gate validated（clean commit 独立复现）。
+- **Alternatives**: R1 保持 open 继续加固（拒绝——无 blocking findings，继续属于过度工程）。
+- **Rationale**: R1 使命 = canonical data model + migration foundation，已完成；不等于 production monitoring / dual-write / R3。
+- **Consequences**: 停止 R1 schema/migration architecture 开发；后续问题按所属 roadmap stage 处理，除非暴露真实 schema blocker。
+- **Affected Files**: `PROJECT_STATUS.md`；`docs/database/r1_finalization_review_v1.md`
+- **Date**: 2026-08-25
+
+## DB-D057 — Future product work proceeds via vertical slice, not further R1.x expansion（R1 Finalization）
+
+- **Status**: Adopted（2026-08-25）
+- **Decision**: R1 关闭后，不再规划 R1C Phase 1.3 / Phase 2.1 / Phase 2.2 等 R1.x 扩展；开发重心转向用户价值 vertical slice：**R2 Minimal Portfolio & Watchlist → R3 Minimal Canonical Data Pipeline → R4 Earnings/Filing Event → R5 Relevance/Thesis Intelligence → R6 Telegram**。未来产品开发中发现的问题，除非暴露真实 schema blocker，否则在所属 roadmap stage 内处理。
+- **Alternatives**: 继续扩充 R1 基础设施（拒绝——收益递减，拖延用户价值）。
+- **Rationale**: 基础设施已足够支撑首个 vertical slice；过早深化属于 scope creep。
+- **Consequences**: Next = R2 Minimal Portfolio & Watchlist + vertical-slice MVP（等待 Berlin 批准，不自动开始）。
+- **Affected Files**: `PROJECT_STATUS.md`；`README.md`
+- **Date**: 2026-08-25

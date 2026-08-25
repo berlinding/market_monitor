@@ -14,9 +14,28 @@ Berlin 的私人市场监控与投研基础设施。当前处于 **development**
 
 ## 当前状态
 
-- 当前阶段：R0 — Project Governance & Architecture
+- R0 Governance — COMPLETE
+- R1 Core Data Model — COMPLETE（canonical schema + migration runner + 真实数据 staging rehearsal 验证通过）
+- Next: R2 Portfolio & Watchlist + vertical-slice MVP
 - Production Monitoring：NOT ENABLED
 - 自动真实交易：DISABLED（当前不执行）
+
+## What works today
+
+- canonical SQLite schema（core 17 表 / private 8 表，R1A v2 FROZEN）
+- real A-share identity mapping（5,548 instruments，1:1 严格映射）
+- real Tushare stock_basic ingestion artifact（CSV + provenance + SHA-256）
+- reproducible migration runner（checksum 校验 / 事务原子 / 幂等）
+- real-data staging validation（38,789 bars 全量迁移，V1–V18 + 100% row reconciliation）
+
+## Not yet implemented
+
+- real portfolio workflow
+- production canonical daily ingestion
+- event monitoring
+- LLM event intelligence
+- Telegram alert
+- Daily Brief
 
 ## 高层 Roadmap
 
