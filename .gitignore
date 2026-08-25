@@ -15,6 +15,9 @@ API.txt
 # ===== Staging rehearsal workspaces (R1C Phase 2) =====
 data/staging/
 
+# ===== Production canonical runtime (R2 Part A) =====
+data/runtime/
+
 # ===== Private portfolio / trading data =====
 data/private/
 portfolio*
