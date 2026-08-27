@@ -2,7 +2,7 @@
 
 ## Current Snapshot
 
-Current Stage: R3-A — A 股日线 canonical 增量入库（COMPLETE 2026-08-27）
+Current Stage: R3-A — A 股日线 canonical 增量入库 + Raw Artifact Immutability Hardening（COMPLETE 2026-08-27）
 System Status: Development
 Production Monitoring: NOT ENABLED
 Automated Trading: DISABLED
@@ -38,12 +38,13 @@ R9 — Quant Layer
 - **R2 Part A — Canonical Identity Activation**（2026-08-25，**PASS**：production core.db INITIALIZED 5,548 instruments / 38,789 bars；production private.db INITIALIZED schema-only；clean commit `a9af1dd` validate V1–V18 ALL PASS）
 - **R2 Part B — Minimal Portfolio & Watchlist**（2026-08-25，**PASS**：account/position/watchlist service + CLI + identity resolution + cross-db validator + monitoring universe；125 tests OK）
 - **R3-A — A 股日线 canonical 增量入库**（2026-08-27，**PASS**：production core.db 新增真实交易日 08-25/08-26 = 11,093 bars；identity 扩展 2 个新上市/复牌 instrument；mapping coverage 100%；reconciliation 0 mismatch；幂等重跑 row count 不变；lineage 完整；143 tests OK）
+- **R3-A Hardening — Raw Artifact Immutability**（2026-08-27，**PASS**：raw artifact 改为 content-addressed 不可变路径（R3-D007）；历史 artifact 3/4/5 重建/迁移修复，全部 `content_hash == sha256(local_path bytes)`；同日重跑不覆盖历史文件；145 tests OK）
 
 ## Current
 
-- **R3-A Minimal Canonical Incremental Ingestion COMPLETE — awaiting Berlin review**
-- 实现：`scripts/ingest_daily.py`（CLI：`--date/--latest/--reconcile/--allow-production/--stock-basic`）+ identity 扩展（新上市/复牌 instrument 从已注册 stock_basic artifact 解析，已有 UID 不动）
-- 测试：`tests/` 12 个文件，**Ran 143 tests — OK（0 failed / 0 errors / 0 skipped）**
+- **R3-A Minimal Canonical Incremental Ingestion + Immutability Hardening COMPLETE — awaiting Berlin review**
+- 实现：`scripts/ingest_daily.py`（CLI：`--date/--latest/--reconcile/--allow-production/--stock-basic`）+ identity 扩展（新上市/复牌 instrument 从已注册 stock_basic artifact 解析，已有 UID 不动）+ **content-addressed 不可变 raw artifact（R3-D007）**
+- 测试：`tests/` 12 个文件，**Ran 145 tests — OK（0 failed / 0 errors / 0 skipped）**
 - Review：`docs/r3/r3a_ingest_review_v1.md`（**Blocking findings = 0**）+ `docs/r3/r3a_decisions_v1.md`（R3-D001–R3-D006）
 - Real portfolio data: NOT POPULATED（等待 Berlin 主动录入）
 
@@ -60,8 +61,9 @@ R9 — Quant Layer
 
 ## Real DB
 
-- **production `data/runtime/core.db`：INITIALIZED + R3-A ACTIVE INGESTION（2026-08-27）**——C0001 + **5,550 instruments**（R2 5,548 + R3-A 新增 2：600984.SH 复牌 / 688835.SH 新上市）/ 11,100 identifiers / **49,882 bars = 9 个交易日（08-14→08-26）** / 10 ingest_runs；gitignored 不入 Git
+- **production `data/runtime/core.db`：INITIALIZED + R3-A ACTIVE INGESTION（2026-08-27）**——C0001 + **5,550 instruments**（R2 5,548 + R3-A 新增 2：600984.SH 复牌 / 688835.SH 新上市）/ 11,100 identifiers / **49,882 bars = 9 个交易日（08-14→08-26）** / 11 ingest_runs；gitignored 不入 Git
 - **R3-A 增量入库（2026-08-27）**：08-25（5,546 行，run 8）+ 08-26（5,547 行，run 9）真实新交易日进入 production；identity 扩展新增 600984.SH（建设机械，listing 2004-07-07 复牌）/ 688835.SH（高凯技术，listing 2026-08-25 新上市）；已有 5,548 个 instrument_uid 未变
+- **R3-A Hardening（2026-08-27）**：raw artifact 改为 content-addressed 不可变路径（`daily_YYYY-MM-DD_<sha256[:16]>.json`）；历史 artifact 3（run 8）被 run 10 覆盖的文件已**精确重建**（exported_at_utc 爆破命中 `2026-08-27T03:27:36Z`，sha256 全匹配），artifact 4/5 迁移到 content-addressed 路径；全部 FILE artifact `content_hash == sha256(local_path bytes)` 成立；run 11 重跑验证历史文件不受影响
 - **production `data/private/private.db`：INITIALIZED（2026-08-25）**——P0001 schema-only，业务表为空（等待 Berlin 真实 portfolio 录入）；gitignored
 - **Real Legacy Migration（production cutover）: NOT EXECUTED**——legacy market.db 原样保留；dual-write OFF；legacy 仍为当前运行数据源（§12/§13）；R3-A 增量从 legacy 读取入 canonical
 
@@ -99,7 +101,7 @@ R9 — Quant Layer
 
 ## Next
 
-- **Berlin reviews R3-A artifacts（`r3a_ingest_review_v1.md` + `r3a_decisions_v1.md` + 143 tests）→ 稳定运行观察（连续多日自动增量入库）→ 之后 R3-B（canonical fetch 独立化 / legacy 依赖解除）或直接演进**。
+- **Berlin reviews R3-A artifacts（`r3a_ingest_review_v1.md` + `r3a_decisions_v1.md`（R3-D001–D007）+ 145 tests）→ 稳定运行观察（连续多日自动增量入库）→ 之后 R3-B（canonical fetch 独立化 / legacy 依赖解除）或直接演进**。
 - 不自动开始下一个 milestone；不自动写真实持仓（等待 Berlin 录入）。
 
 ## Not Authorized
@@ -165,4 +167,4 @@ R9 — Quant Layer
 
 ## Next Authorized Step
 
-- Berlin 审查 R3-A 产物（r3a_ingest_review_v1.md + r3a_decisions_v1.md + 143 tests）→ 授权 R3 稳定运行观察（每日增量入库）与后续演进；真实 portfolio 录入仍在 Berlin 侧。
+- Berlin 审查 R3-A 产物（r3a_ingest_review_v1.md + r3a_decisions_v1.md + 145 tests）→ 授权 R3 稳定运行观察（每日增量入库）与后续演进；真实 portfolio 录入仍在 Berlin 侧。

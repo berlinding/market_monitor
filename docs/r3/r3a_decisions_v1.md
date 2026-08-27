@@ -5,9 +5,9 @@
 
 ## R3-D001 — 增量输入源 = legacy market.db（R3-A 阶段）
 
-- **Decision**: R3-A 的 canonical 增量入库从 **legacy `data/market.db`**（fetch_daily.py 每日写入的可靠 raw input）读取新交易日，导出该日 payload 为 raw artifact（`data/raw/tushare/daily_YYYY-MM-DD.json`，sha256），再入库 canonical。不直接调 Tushare API。
+- **Decision**: R3-A 的 canonical 增量入库从 **legacy `data/market.db`**（fetch_daily.py 每日写入的可靠 raw input）读取新交易日，导出该日 payload 为 raw artifact（content-addressed：`data/raw/tushare/daily_YYYY-MM-DD_<sha256[:16]>.json`，sha256 为文件字节哈希），再入库 canonical。不直接调 Tushare API。
 - **Rationale**: 本轮停止边界要求 legacy downloader 继续保留；legacy 数据已是经过 fetch_daily.py 校验的可靠输入；与 legacy↔canonical reconciliation 语义天然一致（同源对比）。
-- **Consequences**: 未来若 legacy 退休（未授权），R3-B 需将输入源切换为直接 API fetch，decision 另行登记。
+- **Consequences**: 未来若 legacy 退休（未授权），R3-B 需将输入源切换为直接 API fetch，decision 另行登记。路径策略细节见 R3-D007（2026-08-27 hardening 修订）。
 
 ## R3-D002 — Identity expansion：只新增、不重生成
 
@@ -38,3 +38,9 @@
 - **Decision**: `ingest_daily.py` 默认 `PRODUCTION_WRITES_ENABLED=False`；写 production core.db 必须显式 `--allow-production`（R3-A 由 Berlin 本轮授权）。reconcile 模式只读。
 - **Rationale**: 延续 migrate.py 的 production guard 模式；防止 cron 误写。
 - **Consequences**: 测试 T-R3A-GUARD-01。
+
+## R3-D007 — Raw artifact 不可变存储（content-addressed）（2026-08-27 hardening）
+
+- **Decision**: daily raw artifact 采用 **content-addressed 不可变路径**：`data/raw/tushare/daily_YYYY-MM-DD_<sha256[:16]>.json`，其中 sha256 = 该文件字节的完整 SHA-256（`content_hash`）。写入原子化（tmp + os.replace）；目标路径已存在且字节不同 → 硬错误拒绝覆盖（hash 碰撞防护）；字节相同 → 幂等跳过。
+- **Rationale**: 旧固定名 `daily_YYYY-MM-DD.json` 在同日重跑时被新 payload（exported_at_utc 变化 → hash 变化）**覆盖**，导致历史 `raw_artifacts.content_hash` 不再对应 `local_path` 当前字节（生产实测 artifact 3 被 run 10 覆盖）。content-addressed 保证：不同内容 → 不同路径 → 历史文件永不覆盖；每个 artifact 的 `content_hash == sha256(local_path bytes)` 恒成立。
+- **Consequences**: 已重建/迁移生产历史 artifact（3/4/5）到 content-addressed 路径并更新 `local_path_or_reference`（content_hash 不变）；新增测试 T-R3A-IMMUTABLE-01/02；raw_artifacts lineage 语义与 schema 不变，不新增 migration。

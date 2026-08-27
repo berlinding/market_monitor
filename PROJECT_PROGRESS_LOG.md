@@ -862,3 +862,38 @@ resolution + cross-db validator + monitoring universe）。
 ### Next（不自动执行）
 
 - Berlin 审查 R3-A 产物 → 授权 R3 稳定运行观察（每日增量入库 cron/SCHEDULED）→ R3-B（canonical fetch 独立化 / legacy 依赖解除）
+
+---
+
+## 2026-08-27 — R3-A Raw Artifact Immutability Hardening（COMPLETE）
+
+### 背景 / 根因（Berlin review 发现）
+
+- R3-A 初版 `export_raw_payload` 使用固定文件名 `data/raw/tushare/daily_YYYY-MM-DD.json`。
+- 同一交易日重跑时，payload 的 `exported_at_utc` 变化 → content_hash 变化 → **新字节覆盖旧文件**，而 `raw_artifacts.content_hash` 仍记录旧值 → 历史 artifact 的 `content_hash != sha256(local_path bytes)`。
+- 生产实测：artifact 3（run 8，`9f1a1533…`）被 run 10 覆盖（文件变成 `5dbbe1…`），lineage 契约破坏。
+
+### 修复（R3-D007）
+
+1. **content-addressed 不可变路径**：`data/raw/tushare/daily_YYYY-MM-DD_<sha256[:16]>.json`；不同内容 → 不同路径 → 历史文件永不覆盖；同字节 → 同路径幂等；路径已存在且字节不同 → 硬错误拒绝覆盖。写入原子化（tmp + os.replace）。
+2. **生产历史修复**：
+   - artifact 3（run 8）：用 run 8 `started_at` 候选窗口爆破 `exported_at_utc`，**唯一命中 `2026-08-27T03:27:36Z`**，sha256 与 DB 记录完全一致 → **精确重建原始文件字节** → `daily_2026-08-25_9f1a1533e0d9edd8.json`，更新 local_path。
+   - artifact 4/5（run 9/10）：字节复制迁移到 content-addressed 路径（hash 不变），更新 local_path。
+   - 验证：全部 FILE artifact `content_hash == sha256(local_path bytes)` = True。
+3. **新代码生产重跑验证**（run 11，08-25）：新文件 `daily_2026-08-25_b7939799…json`；历史 artifact 3/4/5 文件与 hash 均未受影响；bar 幂等保持（08-25=5,546，total 49,882，dup keys=0）；reconcile 08-25 0 mismatch。
+4. **文档修正**：`ingest_daily.py` 顶部 "never creates instruments" 修正为 identity expansion 实际语义（新上市/复牌创建新 instrument，已有 UID 不动）。
+
+### 测试
+
+- **145 tests — OK（0 failed / 0 errors / 0 skipped）**（143 + 2 新增）
+- 新增 T-R3A-IMMUTABLE-01（同日重跑双 artifact 文件均完整且各自 SHA256 与 DB 一致）/ T-R3A-IMMUTABLE-02（全部 FILE artifact hash==文件字节）
+
+### 文档
+
+- `docs/r3/r3a_decisions_v1.md`：R3-D001 路径策略更新 + 新增 **R3-D007**（content-addressed 不可变存储）
+- `docs/r3/r3a_ingest_review_v1.md`：架构图更新 + Hardening 章节（根因/修复/验证）+ Findings/Next 更新
+- `PROJECT_STATUS.md`：Current Stage / Completed / Current / Real DB / Next 更新（145 tests，11 ingest_runs）
+
+### Next（不自动执行）
+
+- Berlin 审查 hardening 产物 → 授权 R3 稳定运行观察（每日增量入库 cron/SCHEDULED）→ R3-B（canonical fetch 独立化 / legacy 依赖解除）

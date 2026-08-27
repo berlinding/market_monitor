@@ -20,6 +20,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -426,6 +427,82 @@ class TestR3ADiscover(unittest.TestCase):
                 legacy, Path(td) / "core.db"
             )
             self.assertIsNone(found2)
+
+
+# ---------------------------------------------------------------------------
+# Raw artifact immutability tests (R3-A hardening, 2026-08-27)
+# ---------------------------------------------------------------------------
+class TestR3AImmutableArtifact(unittest.TestCase):
+    def _db(self, td: str) -> sqlite3.Connection:
+        return sqlite3.connect(f"file:{Path(td) / 'core.db'}?mode=ro", uri=True)
+
+    def test_rerun_keeps_both_artifacts_intact(self):
+        """T-R3A-IMMUTABLE-01: same-day double ingest -> both artifact files
+        remain readable and each SHA256 matches its DB content_hash exactly."""
+        with tempfile.TemporaryDirectory() as td:
+            legacy = build_legacy(td)
+            r1 = _run_ingest(td, legacy=legacy)
+            time.sleep(1.1)  # exported_at_utc is second-precision; ensure re-run
+            r2 = _run_ingest(td, legacy=legacy)  # idempotent re-run, same date
+
+            p1 = Path(r1["raw_artifact"]["path"])
+            p2 = Path(r2["raw_artifact"]["path"])
+            # content-addressed -> different exported_at_utc -> different paths
+            self.assertNotEqual(
+                p1.name, p2.name,
+                "re-run must not overwrite the first artifact file",
+            )
+            self.assertTrue(p1.is_file(), "first artifact file missing")
+            self.assertTrue(p2.is_file(), "second artifact file missing")
+            self.assertEqual(
+                r1["raw_artifact"]["content_hash"], ing.sha256_file(p1)
+            )
+            self.assertEqual(
+                r2["raw_artifact"]["content_hash"], ing.sha256_file(p2)
+            )
+
+            conn = self._db(td)
+            try:
+                rows = conn.execute(
+                    "SELECT artifact_id, run_id, local_path_or_reference,"
+                    " content_hash FROM raw_artifacts WHERE run_id IN (?,?)"
+                    " ORDER BY artifact_id",
+                    (r1["run_id"], r2["run_id"]),
+                ).fetchall()
+                self.assertEqual(len(rows), 2)
+                for _aid, _rid, path, h in rows:
+                    self.assertEqual(
+                        h, ing.sha256_file(Path(path)),
+                        "DB content_hash must equal file bytes sha256",
+                    )
+                # bar idempotency still holds
+                n = conn.execute(
+                    "SELECT COUNT(*) FROM market_prices_daily WHERE trade_date=?",
+                    (NEW_DATE,),
+                ).fetchone()[0]
+                self.assertEqual(n, len(TS_CODES))
+            finally:
+                conn.close()
+
+    def test_all_artifact_hashes_match_files(self):
+        """T-R3A-IMMUTABLE-02: every registered FILE artifact in core satisfies
+        content_hash == sha256(local_path bytes)."""
+        with tempfile.TemporaryDirectory() as td:
+            legacy = build_legacy(td)
+            _run_ingest(td, legacy=legacy)
+            _run_ingest(td, legacy=legacy)
+            conn = self._db(td)
+            try:
+                rows = conn.execute(
+                    "SELECT artifact_id, local_path_or_reference, content_hash"
+                    " FROM raw_artifacts WHERE artifact_type='FILE'"
+                ).fetchall()
+                self.assertGreaterEqual(len(rows), 2)
+                for _aid, path, h in rows:
+                    self.assertTrue(Path(path).is_file(), f"missing: {path}")
+                    self.assertEqual(h, ing.sha256_file(Path(path)))
+            finally:
+                conn.close()
 
 
 # ---------------------------------------------------------------------------

@@ -9,16 +9,26 @@ ingested into production core.db.market_prices_daily.
 Flow (per trade date):
 
   legacy daily_bars (read-only)
-    -> per-day raw artifact JSON (data/raw/tushare/daily_YYYY-MM-DD.json, sha256)
+    -> per-day IMMUTABLE raw artifact JSON
+       (data/raw/tushare/daily_YYYY-MM-DD_<sha256[:16]>.json, content-addressed)
     -> ingest_run (CN_EQUITY_DAILY / TUSHARE)
-    -> stable instrument_uid mapping (instrument_identifiers, NEVER new identity)
+    -> stable instrument_uid mapping (instrument_identifiers; NEW listings /
+       resumed instruments get NEW instruments via identity expansion, existing
+       UIDs are never touched)
     -> controlled upsert into market_prices_daily (DB-D031)
     -> post-validation (expected == loaded, lineage complete)
 
 Semantics:
   * Reuses production stable instrument_uid via instrument_identifiers
-    (provider='TUSHARE', identifier_type='EXCHANGE_SYMBOL', valid_to IS NULL);
-    this script NEVER creates instruments/entities/identifiers.
+    (provider='TUSHARE', identifier_type='EXCHANGE_SYMBOL', valid_to IS NULL).
+    Existing instruments/entities/identifiers are NEVER modified or
+    regenerated; ts_codes genuinely absent from core identity are resolved
+    from the registered stock_basic artifact and created as NEW instruments
+    (identity expansion, R3-D002) inside the same atomic run.
+  * Raw artifacts are content-addressed and immutable: a re-run of the same
+    trade_date writes a DIFFERENT path (exported_at_utc differs -> hash
+    differs), so historical artifact files are never overwritten;
+    content_hash == sha256(local_path bytes) always holds.
   * Controlled upsert key = UNIQUE(instrument_id, trade_date, adjustment_type,
     source_id) -> re-running the same trade_date is idempotent (row count
     unchanged, bar_id stable).
@@ -137,7 +147,18 @@ def load_legacy_day(legacy_path: Path, canonical_date: str) -> list[dict]:
 def export_raw_payload(
     raw_dir: Path, canonical_date: str, rows: list[dict]
 ) -> dict:
-    """Persist the day payload as a raw artifact file; return path + sha256."""
+    """Persist the day payload as an IMMUTABLE content-addressed artifact.
+
+    Path: data/raw/tushare/daily_{canonical_date}_{sha256[:16]}.json
+      * content_hash == sha256(file bytes) by construction;
+      * different content (e.g. a re-run with a new exported_at_utc) -> a
+        different path -> historical artifacts are NEVER overwritten;
+      * identical bytes -> identical path (re-write is byte-identical);
+      * a hash collision on an existing path with different bytes is a
+        hard error (never silently overwrite).
+    """
+    import os
+
     raw_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "source": SOURCE_CODE,
@@ -148,9 +169,21 @@ def export_raw_payload(
         "rows": rows,
     }
     data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-    path = raw_dir / f"daily_{canonical_date}.json"
-    path.write_bytes(data)
-    return {"path": str(path), "content_hash": sha256_bytes(data)}
+    content_hash = sha256_bytes(data)
+    path = raw_dir / f"daily_{canonical_date}_{content_hash[:16]}.json"
+    if path.exists():
+        existing = path.read_bytes()
+        if existing != data:
+            raise IngestValidationError(
+                f"content-addressed collision at {path.name}: existing bytes "
+                "differ from new payload (refusing to overwrite)"
+            )
+    else:
+        # atomic write: temp file + rename so a reader never sees partial bytes
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    return {"path": str(path), "content_hash": content_hash}
 
 
 # ---------------------------------------------------------------------------
