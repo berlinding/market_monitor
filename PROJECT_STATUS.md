@@ -93,7 +93,8 @@ R9 — Quant Layer
 - 位置：`prototypes/dividend_dashboard/`（`index.html` + `chart.umd.min.js` + `data/dashboard_data.js`；2026-08-22 从根目录迁入，git mv 保留历史）
 - Status: **Prototype, not integrated with canonical DB**（未接入 core.db/private.db）
 - 治理记录：`docs/prototypes/dividend_dashboard_status_v1.md`；决策：DB-D015
-- 本轮不扩展、不继续开发；`Test1` 测试残留已于 2026-08-22 删除（独立 cleanup）
+- **自动同步治理修复（2026-08-27）**：根因 = invest-lab `deploy.sh` 把 dashboard 产物复制到 repo root 后 commit/push（invest-agent cron `dbece3dc` 每日 17:30 触发）。已修复：deploy.sh 目标改为 `prototypes/dividend_dashboard/` + 自同步 + 防回归断言；GitHub main 已清除 root 副本（commit `9885170`）；`.gitignore` 增加 root 锚定 ignore；新增 `tests/test_dashboard_governance.py`（T-DASH-ROOT-01/02 + T-DASH-PROTO-01）
+- 本轮不扩展、不继续开发 dashboard 功能
 
 ## Next
 

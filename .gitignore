@@ -40,6 +40,12 @@ venv/
 __pycache__/
 *.pyc
 
+# ===== Dashboard root copies (governance: prototype lives only in prototypes/dividend_dashboard/) =====
+# 2026-08-27: deploy.sh 曾把 dashboard 产物复制到 repo root；禁止再出现 root 副本。
+/index.html
+/chart.umd.min.js
+/data/dashboard_data.js
+
 # ===== OpenClaw runtime state =====
 openclaw-workspace-state.json
 

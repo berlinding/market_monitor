@@ -794,3 +794,33 @@ resolution + cross-db validator + monitoring universe）。
 
 - **Berlin review R2 artifacts → 录入真实 portfolio（accounts/positions/watchlists）**
 - R3 Minimal Canonical Data Pipeline（等待批准，不自动开始）
+
+---
+
+## 2026-08-27 — Dashboard 自动同步路径治理修复（root 重复副本清除）
+
+### 背景 / 根因
+
+- Dashboard prototype 正式位置 = `prototypes/dividend_dashboard/`（DB-D015，2026-08-22 git mv 迁入）。
+- 但 2026-08-25 / 08-26 的 `update: ... 17:32` 自动提交重新在 **repo root** 生成了 `index.html` / `chart.umd.min.js` / `data/dashboard_data.js`（GitHub main 上 fd96ecd / 84c5113 两笔 commit）。
+- **根因**：dashboard 的生成/部署脚本并不在 market_monitor 仓库内，而在 `~/projects/invest-lab/data/hk-dividend/`：
+  - `deploy.sh` 把 `frontend/` 产物复制到 `deploy/`（该目录是 market_monitor GitHub 仓库的独立 clone）的 **repo root 路径**，然后 `git add -A && git commit && git push origin main`。
+  - 触发者：invest agent 的 cron `dbece3dc`（港股红利现金流每日监控，17:30 CST 触发，跑 `pipeline.py && sync_data.py && deploy.sh`）——即 `update: ... 17:32` 提交的来源。
+  - 2026-08-22 迁移后 deploy.sh 未同步更新目标路径 → 路径回退到 root。
+
+### 修改
+
+| 文件 / job | 变更 |
+|---|---|
+| `~/projects/invest-lab/data/hk-dividend/deploy.sh` | 目标路径改为 `$DEPLOY/prototypes/dividend_dashboard/`；新增：与 origin/main 自同步（fetch + reset --hard + clean）、自动清除 root 残留（git rm）、防回归断言（root 出现 dashboard 文件则中止提交） |
+| GitHub main | 新增 cleanup commit `9885170`（删除 root 三件套）+ `fd9eb95`（deploy.sh 修复后首次运行，prototype data 刷新至 08-26 快照） |
+| `.gitignore` | 增加 root 锚定 ignore：`/index.html`、`/chart.umd.min.js`、`/data/dashboard_data.js`（防任何 clone 中 `git add -A` 再次 stage root 副本） |
+| `tests/test_dashboard_governance.py`（新增） | T-DASH-ROOT-01（root 文件不被 git 跟踪）/ T-DASH-ROOT-02（.gitignore 模式存在）/ T-DASH-PROTO-01（prototype 文件存在且被跟踪） |
+| `PROJECT_STATUS.md` | Existing Prototype 节更新治理修复记录 |
+
+### 验证
+
+- GitHub main：root 无 dashboard 文件（`git ls-tree origin/main` 检查通过）；`prototypes/dividend_dashboard/` 三件套完整。
+- deploy.sh 修复后实际运行：提交到正确路径 `prototypes/dividend_dashboard/data/dashboard_data.js`，exit 0。
+- 全量测试：**128 tests OK（125 + 3 新增）**。
+- git 无 private DB / token / raw / staging 数据（`git ls-files` 确认）。

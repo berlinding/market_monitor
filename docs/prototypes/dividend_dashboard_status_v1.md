@@ -33,13 +33,13 @@
 
 ## Known Scripts
 
-- `sync_data.py`：生成 dashboard_data.js 的脚本——**存在过但从未提交**（dashboard_data.js 的 generated_at 时间戳与 commit 时间一致：2026-08-16、2026-08-17、2026-08-20，说明是手动运行后提交）。
-- 无其他 dashboard 相关脚本。
+- `sync_data.py`：生成 dashboard_data.js 的脚本——**存在于 `~/projects/invest-lab/data/hk-dividend/`（invest-lab 项目，不在本仓库）**；dashboard_data.js 的 generated_at 时间戳与 commit 时间一致（2026-08-16、08-17、08-20、08-24、08-25、08-26），说明是 cron/手动运行后提交。
+- `deploy.sh`：**同目录**（`~/projects/invest-lab/data/hk-dividend/deploy.sh`）——把 `frontend/` 产物复制到 `deploy/`（market_monitor GitHub 仓库的独立 clone）并 commit/push 到 main。**2026-08-27 修复**：目标路径从 repo root 改为 `prototypes/dividend_dashboard/`，新增与 origin/main 自同步、root 残留自动清除、防回归断言（root 出现 dashboard 文件则中止提交）。
 
 ## Automation Status
 
-- **无定时任务**：OpenClaw cron 中仅有 `market-monitor-daily-download`（A 股行情下载），与 dashboard 无关；系统 crontab 为空。
-- 更新模式：手工运行 sync_data.py → 手动 commit/push（3 次历史更新均为手工）。
+- **自动任务：有**——invest agent 的 cron `dbece3dc`（港股红利现金流每日监控，每日 17:30 CST）执行 `pipeline.py && sync_data.py && deploy.sh`，即 `update: ... 17:32` 提交的来源（2026-08-17/08-24/08-25/08-26 均为该任务）。OpenClaw market_monitor agent 的 cron 仅 `market-monitor-daily-download`（A 股行情下载），与 dashboard 无关；系统 crontab 为空。
+- **路径治理（2026-08-27）**：deploy.sh 目标已固定在 `prototypes/dividend_dashboard/`；GitHub main 上的 root 副本已删除（cleanup commit `9885170`）；`.gitignore` 增加 root 锚定 ignore（`/index.html` `/chart.umd.min.js` `/data/dashboard_data.js`）；回归测试 `tests/test_dashboard_governance.py`（T-DASH-ROOT-01/02 + T-DASH-PROTO-01）。
 
 ## Privacy Classification
 
