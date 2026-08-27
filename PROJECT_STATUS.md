@@ -2,7 +2,7 @@
 
 ## Current Snapshot
 
-Current Stage: R2 — Portfolio & Watchlist（R2 Foundation COMPLETE 2026-08-25）
+Current Stage: R3-A — A 股日线 canonical 增量入库（COMPLETE 2026-08-27）
 System Status: Development
 Production Monitoring: NOT ENABLED
 Automated Trading: DISABLED
@@ -37,15 +37,15 @@ R9 — Quant Layer
 - **R1 Finalization Gate — Clean-Commit Reproducibility Rehearsal**（2026-08-25，**FINAL RESULT: PASS**：commit `a6007b3` clean tree 上独立复现真实 staging，git_dirty=false，runner 属 HEAD，**R1 — Core Data Model: COMPLETE**）
 - **R2 Part A — Canonical Identity Activation**（2026-08-25，**PASS**：production core.db INITIALIZED 5,548 instruments / 38,789 bars；production private.db INITIALIZED schema-only；clean commit `a9af1dd` validate V1–V18 ALL PASS）
 - **R2 Part B — Minimal Portfolio & Watchlist**（2026-08-25，**PASS**：account/position/watchlist service + CLI + identity resolution + cross-db validator + monitoring universe；125 tests OK）
+- **R3-A — A 股日线 canonical 增量入库**（2026-08-27，**PASS**：production core.db 新增真实交易日 08-25/08-26 = 11,093 bars；identity 扩展 2 个新上市/复牌 instrument；mapping coverage 100%；reconciliation 0 mismatch；幂等重跑 row count 不变；lineage 完整；143 tests OK）
 
 ## Current
 
-- **R2 Minimal Portfolio & Watchlist Foundation COMPLETE — awaiting Berlin review + real portfolio input**
-- 实现：`scripts/portfolio/`（repository + service）+ `scripts/portfolio.py`（CLI）+ `scripts/production_init.py`（Part A）
-- 测试：`tests/` 10 个文件，**Ran 125 tests — OK（0 failed / 0 errors / 0 skipped）**
-- Review：`docs/r2/r2_minimal_review_v1.md`（**Blocking findings = 0**）+ `docs/portfolio/portfolio_decisions_v1.md`（P-D001–P-D005）
-- Decision Register：DB-D001–D057（冻结）+ P-D001–P-D005（R2）
-- **Real portfolio data: NOT POPULATED（等待 Berlin 主动录入）**
+- **R3-A Minimal Canonical Incremental Ingestion COMPLETE — awaiting Berlin review**
+- 实现：`scripts/ingest_daily.py`（CLI：`--date/--latest/--reconcile/--allow-production/--stock-basic`）+ identity 扩展（新上市/复牌 instrument 从已注册 stock_basic artifact 解析，已有 UID 不动）
+- 测试：`tests/` 12 个文件，**Ran 143 tests — OK（0 failed / 0 errors / 0 skipped）**
+- Review：`docs/r3/r3a_ingest_review_v1.md`（**Blocking findings = 0**）+ `docs/r3/r3a_decisions_v1.md`（R3-D001–R3-D006）
+- Real portfolio data: NOT POPULATED（等待 Berlin 主动录入）
 
 ## Validation（R1C Phase 1.2）
 
@@ -60,9 +60,10 @@ R9 — Quant Layer
 
 ## Real DB
 
-- **production `data/runtime/core.db`：INITIALIZED（2026-08-25，R2 Part A）**——C0001 + 5,548 instruments / 11,096 identifiers / 38,789 bars / 7 ingest_runs；gitignored 不入 Git
+- **production `data/runtime/core.db`：INITIALIZED + R3-A ACTIVE INGESTION（2026-08-27）**——C0001 + **5,550 instruments**（R2 5,548 + R3-A 新增 2：600984.SH 复牌 / 688835.SH 新上市）/ 11,100 identifiers / **49,882 bars = 9 个交易日（08-14→08-26）** / 10 ingest_runs；gitignored 不入 Git
+- **R3-A 增量入库（2026-08-27）**：08-25（5,546 行，run 8）+ 08-26（5,547 行，run 9）真实新交易日进入 production；identity 扩展新增 600984.SH（建设机械，listing 2004-07-07 复牌）/ 688835.SH（高凯技术，listing 2026-08-25 新上市）；已有 5,548 个 instrument_uid 未变
 - **production `data/private/private.db`：INITIALIZED（2026-08-25）**——P0001 schema-only，业务表为空（等待 Berlin 真实 portfolio 录入）；gitignored
-- **Real Legacy Migration（production cutover）: NOT EXECUTED**——legacy market.db 38,789 行原样保留；dual-write OFF；legacy 仍为当前运行数据源（§12/§13）
+- **Real Legacy Migration（production cutover）: NOT EXECUTED**——legacy market.db 原样保留；dual-write OFF；legacy 仍为当前运行数据源（§12/§13）；R3-A 增量从 legacy 读取入 canonical
 
 ## Staging Rehearsal（R1C Phase 2，2026-08-25 run `20260825T030439Z`）
 
@@ -98,15 +99,15 @@ R9 — Quant Layer
 
 ## Next
 
-- **Berlin reviews R2 artifacts（`r2_minimal_review_v1.md` + 125 tests）→ 录入真实 portfolio（accounts/positions/watchlists）**；之后进入 R3 Minimal Canonical Data Pipeline。
-- 不自动开始 R3；不自动写真实持仓（等待 Berlin 录入）。
+- **Berlin reviews R3-A artifacts（`r3a_ingest_review_v1.md` + `r3a_decisions_v1.md` + 143 tests）→ 稳定运行观察（连续多日自动增量入库）→ 之后 R3-B（canonical fetch 独立化 / legacy 依赖解除）或直接演进**。
+- 不自动开始下一个 milestone；不自动写真实持仓（等待 Berlin 录入）。
 
 ## Not Authorized
 
-- production cutover / dual-write（fetch_daily.py 保持只写 legacy）
+- legacy retirement / production cutover / dual-write（fetch_daily.py 保持只写 legacy；R3-A 增量从 legacy 读 canonical，非 cutover）
 - 自动写真实 portfolio（accounts/positions/watchlists 数据需 Berlin 主动录入）
 - Dashboard 继续开发
-- R3 自动开始
+- R3-B / R4 自动开始
 
 ## Active Components
 
@@ -137,8 +138,8 @@ R9 — Quant Layer
 ## Runtime Status
 
 - 开发阶段，无生产监控，无自动交易
-- legacy downloader（`fetch_daily.py`）存在且每日 cron 运行（写 legacy market.db）；production canonical monitoring NOT ENABLED
-- production core.db = initialized canonical baseline（非 active ingestion target）
+- legacy downloader（`fetch_daily.py`）存在且每日 cron 运行（写 legacy market.db）；**R3-A 增量入库已打通（`scripts/ingest_daily.py`），可手动/调度执行；production canonical 自动监控 NOT ENABLED（待 R3 稳定运行观察）**
+- production core.db = initialized canonical baseline + R3-A 增量（active ingestion target，手动触发）
 - legacy downloader operational status（cron 健康度/缺口回补）requires separate R3 review
 
 ## Current Blockers
@@ -164,4 +165,4 @@ R9 — Quant Layer
 
 ## Next Authorized Step
 
-- Berlin 审查 R2 产物（r2_minimal_review_v1.md + portfolio_decisions_v1.md + 125 tests）→ 录入真实 portfolio → R3 Minimal Canonical Data Pipeline
+- Berlin 审查 R3-A 产物（r3a_ingest_review_v1.md + r3a_decisions_v1.md + 143 tests）→ 授权 R3 稳定运行观察（每日增量入库）与后续演进；真实 portfolio 录入仍在 Berlin 侧。

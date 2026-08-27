@@ -824,3 +824,41 @@ resolution + cross-db validator + monitoring universe）。
 - deploy.sh 修复后实际运行：提交到正确路径 `prototypes/dividend_dashboard/data/dashboard_data.js`，exit 0。
 - 全量测试：**128 tests OK（125 + 3 新增）**。
 - git 无 private DB / token / raw / staging 数据（`git ls-files` 确认）。
+
+---
+
+## 2026-08-27 — R3-A A 股日线 canonical 增量入库（COMPLETE）
+
+### 目标
+
+让新的真实交易日安全、幂等、可追溯地进入 production core.db.market_prices_daily。
+
+### 实现
+
+- 新增 `scripts/ingest_daily.py`：CLI（`--date/--latest/--reconcile/--allow-production/--stock-basic`）
+  - 流程：legacy market.db 读取该交易日 → 导出 raw artifact（`data/raw/tushare/daily_YYYY-MM-DD.json` + sha256）→ 解析 dataset/source（CN_EQUITY_DAILY/TUSHARE）→ 经 instrument_identifiers 映射稳定 instrument_uid → BEGIN IMMEDIATE 事务（ingest_run + raw_artifact + bars controlled upsert + post-validation）→ SUCCESS/FAILED run 记录
+  - 幂等：`ON CONFLICT(instrument_id, trade_date, adjustment_type, source_id) DO UPDATE`（DB-D031 延续），重跑同日 row count 不变
+  - **Identity expansion**（R3-D002）：新 ts_code（新上市/复牌）从已注册 stock_basic FILE artifact 解析创建新 instrument（新 UUID）；已有 5,548 UID 一律不动；core+stock_basic 均无 → MappingGateError ABORT
+  - Production guard：写 production 需 `--allow-production`；`--reconcile` 只读
+- 新增 `tests/test_r3_ingest.py`（15 tests）：LOAD/IDEMPOTENT/UNKNOWN/BADDATE/PARTIAL/MAPPING/STABLEUID/LINEAGE/RECONCILE/GUARD/DISCOVER + SYNC-01..04
+- 新增 `docs/r3/r3a_decisions_v1.md`（R3-D001–D006）+ `docs/r3/r3a_ingest_review_v1.md`（Blocking = 0）
+
+### Production smoke（真实数据）
+
+- **08-25**：5,546 rows loaded，run_id=8，mapping 100% — 首次出现 2 个新 instrument：600984.SH（建设机械，复牌）/ 688835.SH（高凯技术，新上市），身份扩展创建（instrument_id 5549/5550）
+- **08-26**：5,547 rows loaded，run_id=9，mapping 100%
+- **幂等重跑 08-25**（run_id=10）：row count 仍 5,546，total 49,882 不变，dup keys=0
+- **Reconciliation**：08-25/08-26/08-24 baseline 全部 0 mismatch（legacy==canonical 行数与 OHLC/volume/turnover 逐行一致，含 688835.SH 两日 bar）
+- **Lineage**：ingest_runs 8/9/10 SUCCESS（expected==loaded）；raw_artifacts 3/4/5（content_hash==文件 sha256）；bars 全链 source_id/ingest_run_id/raw_artifact_id 非空（orphan=0）
+- **Stable UID**：已有 5,548 instrument_uid 未变；5,550 = 5,548 + 2 新增；identifiers 11,100
+
+### 测试 / 状态
+
+- **143 tests — OK（0 failed / 0 errors / 0 skipped）**（128 + 15 新增）
+- production core.db：49,882 bars / 9 交易日（08-14→08-26）/ max trade_date **2026-08-26** / 5,550 instruments / 10 ingest_runs
+- PROJECT_STATUS.md：Current Stage → R3-A；测试数 125→143 修正；Real DB / Next / Runtime Status 更新
+- legacy market.db 未删除、fetch_daily.py 未改（停止边界遵守）；R4 / 港股美股 pipeline 未开始
+
+### Next（不自动执行）
+
+- Berlin 审查 R3-A 产物 → 授权 R3 稳定运行观察（每日增量入库 cron/SCHEDULED）→ R3-B（canonical fetch 独立化 / legacy 依赖解除）
